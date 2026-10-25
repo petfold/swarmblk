@@ -44,7 +44,7 @@ Prove the data model: overlay changes become a new Swarm tree that restores else
 - [ ] NBD server: evaluate an existing Go library (for example pojntfx/go-nbd) for structured replies, block status, flush, trim and write-zeroes; otherwise implement that subset
 - [ ] Write epochs with replayable, checksummed index; flush and FUA durability (SPEC §11)
 - [ ] Tree and chunk caches; zero short-circuit; holes through block status; parallel verified fetches
-- [ ] Trace-driven prefetch (`prefetch.bin`, SPEC §6) and background hydration
+- [ ] Trace-driven prefetch (`prefetch.bin`, SPEC §6), and hydration as a per-disk policy: lazy, hydrate, or re-stamp only (DESIGN §3)
 - [ ] Live checkpoints from an atomic cut; guest-agent freeze for application consistency
 - [ ] Failure policy: block the guest and raise an alarm after retries
 - [ ] `PR_SET_IO_FLUSHER` and locked memory for the engine and Bee

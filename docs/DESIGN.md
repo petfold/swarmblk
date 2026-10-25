@@ -84,12 +84,22 @@ The engine's read rules:
 - **Verify every chunk.** Recomputing the BMT hash means the Bee node or gateway is trusted for availability and privacy, not integrity.
 - **Share one chunk cache.** A local store keyed by Swarm address serves all snapshots and lineages. Chunks uploaded at a checkpoint go straight into it, so a host never re-fetches its own writes.
 - **Prefetch from a boot trace.** Record which blocks a boot reads, in order, and store the list in the snapshot manifest; on the next cold boot, fetch it in parallel ahead of the guest. Containers show why this works: Slacker found that pulling images took 76% of start time, yet only 6.4% of the pulled data was read.
-- **Hydrate in the background.** Copy the whole snapshot to local storage while the guest runs, fetching what the guest touches first. dm-clone, Proxmox live restore and EBS volume restore all work this way.
+- **Hydrate by policy, not by default.** Each disk chooses one of three:
+  - *lazy:* demand reads and trace prefetch only, with a bounded chunk cache.
+  - *hydrate:* copy the whole snapshot locally in the background, fetching what the guest touches first, as dm-clone, Proxmox live restore and EBS volume restore do.
+  - *re-stamp only:* fetch each live chunk once to stamp it under the host's own batch, then discard it (§5).
+
+  Lazy suits golden images, CI and forensics, where most blocks are never read. Hydrate suits disaster-recovery restores that must outlive a network outage or an expired batch.
 - **Fail visibly.** When retries run out, the engine either blocks the guest or returns an I/O error. ext4 remounts read-only on the first error, so the default is to block and raise an alarm.
 
 Erasure coding protects availability, not random-read latency: at the medium level, rebuilding one missing 4 KiB block takes 119 other chunks of its group. It pays off in sequential reads and hydration, where the whole group is read anyway.
 
-Reads are metered. Bee gives light nodes a tenth of a full node's free bandwidth allowance and heavier use is paid by cheque, so hydration rate is a cost setting as well as a speed one.
+Reads are metered. Each peer connection forgives a little debt every second (Bee's time-based settlement; a light node gets a tenth of a full node's rate), and the rest is paid by cheque. In Phase 0 that allowance covered about 82% of a light node's reads. It grows with the number of connections, though, and is unlikely to last, so budget at full price (October 2026):
+
+- **About 0.81 xBZZ per GiB through forwarding,** and 0.58 xBZZ per GiB direct from storers.
+- **For the Phase 0 Ubuntu image,** that is 0.16–0.23 xBZZ for its 307 MiB boot trace and 0.95–1.34 xBZZ for all 1.8 GB of its distinct data.
+
+Bulk transfers (prefetch, hydration, re-stamping) pay as they go, so their rate is a cost setting as well as a speed one; whatever comes free is a bonus. A light node also sustained only about 170 chunks/s (0.7 MB/s) however many requests were in flight, which looks bound by settlement rather than parallelism. Faster bulk transfers therefore need more nodes, or prepaid direct fetching from storers as in [directswarm](https://github.com/petfold/directswarm).
 
 Cold boot ≈ dependent-read chain length × retrieval latency without prefetch; with prefetch it is ≈ bytes read ÷ parallel throughput. Phase 0 measures both inputs.
 
@@ -270,6 +280,8 @@ Decisions:
 | 2026-10-25 | Disaster recovery with live restore first (provisional) | Tolerates read latency; provider independence | General-purpose VM disks first |
 | 2026-10-25 | Name: swarmblk | Functional; matches swarmfs and Linux `-blk` naming | mothball, combdrive, capped |
 | 2026-10-25 | License: BSD 3-Clause | Matches Bee, which swarmblk imports, and swarmfs and s3warm | — |
+| 2026-10-25 | Hydration is a per-disk policy: lazy, hydrate, or re-stamp only | Most workloads never read most blocks; disaster-recovery restores and takeovers need the data | Always hydrating every disk |
+| 2026-10-25 | Budget reads at full bandwidth price | Phase 0's free share (about 82%) grows with connection count and is unlikely to last | Relying on the free allowance |
 
 ## 13. References
 
