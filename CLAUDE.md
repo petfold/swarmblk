@@ -21,12 +21,12 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 - **One stamp issuer per batch.** A batch is bound to one host and one Bee node. Never stamp from it anywhere else. If a node loses its state, its batches take no new chunks.
 - **Root last.** No lineage feed update until the upload tag shows every new chunk synced. A `/chunks/stream` ack only means stored locally.
 - **One writer per lineage.** Never write a lineage feed from two hosts.
-- **No secrets in the repo.** Lineage keys, disk keys and disk cards never go into code, logs, fixtures or commits.
+- **No secrets in the repo.** It is public. Lineage keys, disk keys and disk cards never go into code, logs, fixtures or commits.
 - **Ask before spending.** Buying, topping up or diluting batches spends xBZZ; ask the owner (Peter) first.
 
 ## Stack
 
-- Go, at the version Bee's `go.mod` requires. Module path `github.com/petfold/swarmblk`.
+- Go, at the version Bee's `go.mod` requires. Module path and public repo: `github.com/petfold/swarmblk`.
 - `github.com/ethersphere/bee/v2` at the latest 2.8.x (v2.8.3 at writing), used as a library. Ethersphere's beekeeper does the same.
 
 | Bee package | Use |

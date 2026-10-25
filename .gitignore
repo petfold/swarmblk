@@ -1,0 +1,4 @@
+# Disk images from the Phase 0 runbook and tests
+*.raw
+*.img
+*.qcow2
