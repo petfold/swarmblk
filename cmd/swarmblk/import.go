@@ -19,6 +19,7 @@ import (
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 
 	"github.com/petfold/swarmblk/internal/bee"
+	"github.com/petfold/swarmblk/internal/snapshot"
 	"github.com/petfold/swarmblk/internal/store"
 	"github.com/petfold/swarmblk/internal/tree"
 )
@@ -36,11 +37,11 @@ func cmdImport(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	root, err := importImage(context.Background(), bee.New(*beeURL, 64), s, *batch, fs.Arg(0), os.Stderr)
+	snap, err := importImage(context.Background(), bee.New(*beeURL, 64), s, *batch, fs.Arg(0), os.Stderr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(root)
+	fmt.Println(snap)
 }
 
 // putterFunc lets a function serve as Bee's storage.Putter.
@@ -48,11 +49,12 @@ type putterFunc func(context.Context, swarm.Chunk) error
 
 func (f putterFunc) Put(ctx context.Context, ch swarm.Chunk) error { return f(ctx, ch) }
 
-// importImage turns the raw disk image at path into a format-1 tree: it
-// builds the tree with Bee's pipeline into s, checks that batch has room for
-// it, uploads every distinct chunk over one stream under a new tag, root
-// last, and waits until all of them are synced (SPEC §8). It reports
-// progress to w and returns the root.
+// importImage turns the raw disk image at path into a first snapshot: it
+// builds the format-1 tree with Bee's pipeline into s, adds a snapshot
+// manifest (SPEC §5), checks that batch has room, uploads every distinct
+// chunk over one stream under a new tag with the manifest's root last, and
+// waits until all of them are synced (SPEC §8). It reports progress to w
+// and returns the snapshot's reference.
 func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path string, w io.Writer) (swarm.Address, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -81,10 +83,11 @@ func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path
 	// Build the tree into the store, keeping each distinct chunk once.
 	start := time.Now()
 	var (
-		mu    sync.Mutex
-		total int
-		seen  = map[string]bool{}
-		order []swarm.Address
+		mu      sync.Mutex
+		total   int
+		changed int64 // blocks that are not all zero
+		seen    = map[string]bool{}
+		order   []swarm.Address
 	)
 	put := putterFunc(func(ctx context.Context, ch swarm.Chunk) error {
 		if err := s.Put(ctx, ch); err != nil {
@@ -93,6 +96,9 @@ func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path
 		mu.Lock()
 		defer mu.Unlock()
 		total++
+		if binary.LittleEndian.Uint64(ch.Data()) == swarm.ChunkSize && !ch.Address().Equal(tree.Zero(0)) {
+			changed++ // a leaf: format 1 has only full leaves, and no other chunk has this span
+		}
 		if k := ch.Address().ByteString(); !seen[k] {
 			seen[k] = true
 			order = append(order, ch.Address())
@@ -103,13 +109,22 @@ func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path
 	if err != nil {
 		return swarm.ZeroAddress, err
 	}
-	for i, a := range order { // root last
-		if a.Equal(root) {
-			order = append(append(order[:i:i], order[i+1:]...), root)
+	fmt.Fprintf(w, "tree: %d MiB disk, %d chunks, %d distinct, root %s, built in %v\n", g.Size>>20, total, len(order), root, time.Since(start).Round(time.Second))
+
+	meta := snapshot.NewMeta(g.Size, root)
+	meta.Batches = []string{batch}
+	meta.Stats = snapshot.Stats{ChangedBlocks: changed, NewChunks: int64(len(order))}
+	snap, err := snapshot.Write(ctx, put, s, meta, nil)
+	if err != nil {
+		return swarm.ZeroAddress, err
+	}
+	for i, a := range order { // the manifest's root last, so the snapshot is complete once it arrives
+		if a.Equal(snap) {
+			order = append(append(order[:i:i], order[i+1:]...), snap)
 			break
 		}
 	}
-	fmt.Fprintf(w, "tree: %d MiB disk, %d chunks, %d distinct, built in %v\n", g.Size>>20, total, len(order), time.Since(start).Round(time.Second))
+	fmt.Fprintf(w, "snapshot: %s, %d blocks with data, %d chunks to upload\n", snap, changed, len(order))
 
 	if err := checkRoom(ctx, c, batch, order, w); err != nil {
 		return swarm.ZeroAddress, err
@@ -149,7 +164,7 @@ func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path
 		}
 		if t.Done() {
 			fmt.Fprintf(w, "sync: %d of %d synced after %v\n", t.Synced, t.Split-t.Seen, time.Since(start).Round(time.Second))
-			return root, nil
+			return snap, nil
 		}
 		if time.Since(last) >= time.Minute {
 			fmt.Fprintf(w, "sync: %d of %d synced\n", t.Synced, t.Split-t.Seen)

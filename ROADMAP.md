@@ -29,7 +29,7 @@ Prove the data model: overlay changes become a new Swarm tree that restores else
 - [x] `internal/tree`: geometry, path arithmetic, zero subtrees, incremental rebuild along dirty paths, tree diff; test vectors against Bee's `pkg/file/pipeline/builder` (SPEC §14, I1)
 - [ ] `internal/bee`: HTTP client for `/chunks`, `/chunks/stream`, `/tags`, `/soc`, `/feeds`, `/stamps`, `/stamps/{id}/buckets`
 - [x] `internal/store`: content-addressed chunk store (tree cache and chunk cache), verified on write
-- [ ] `internal/snapshot`: Mantaray manifest and `meta.json` (SPEC §5)
+- [x] `internal/snapshot`: Mantaray manifest and `meta.json` (SPEC §5)
 - [ ] `internal/lineage`: lineage feed read and write (SPEC §7)
 - [x] `swarmblk import <image.raw>`: chunk-level upload at redundancy 0, producing the same root as Phase 0's `/bytes` upload
 - [ ] `swarmblk checkpoint <overlay.qcow2>`: allocated extents from `qemu-img map --output=json` (zero clusters become Z_0), block reads through `qemu-nbd` or libnbd, rehash, skip covered addresses, upload, rebuild, confirm by tag, publish (SPEC §8)

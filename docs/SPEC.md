@@ -77,7 +77,7 @@ A snapshot is a Mantaray manifest built with Bee's `pkg/manifest` and uploaded c
 | `meta.json` | JSON document below | `application/json` |
 | `prefetch.bin` | optional boot trace (§6) | `application/octet-stream` |
 
-Anyone can then fetch the image with `GET /bzz/<manifest>/disk.raw`.
+Each entry also carries its name as `Filename` metadata, and the root path `/` names `meta.json` as its index document (`website-index-document`). Anyone can then fetch the image with `GET /bzz/<manifest>/disk.raw`, and `GET /bzz/<manifest>/` shows the metadata. Every chunk is at redundancy level 0, and the manifest's root is uploaded last.
 
 `meta.json`, format 1:
 
@@ -105,7 +105,10 @@ Anyone can then fetch the image with `GET /bzz/<manifest>/disk.raw`.
 | `encryption` | `none` or `guest-luks` (informational; the host never sees keys) |
 | `consistency` | `crash`, or `application` when the guest filesystem was frozen through the guest agent |
 | `batches` | every batch the writer knows stamps chunks reachable from this snapshot: its own plus the parent's list |
+| `parent` | the parent snapshot's manifest, or null for a first snapshot |
+| `lineage` | the snapshot's place in a lineage feed (§7), or null for a snapshot outside any lineage, such as a plain import |
 | `prefetch` | path of the trace, or null |
+| `stats` | `changed_blocks`: blocks that differ from the parent, or from an empty disk for a first snapshot; `new_chunks`: distinct chunks of the disk tree that the parent's tree lacks, or all of them for a first snapshot |
 
 Readers must ignore unknown fields. Writers must not change the meaning of a field within format 1.
 

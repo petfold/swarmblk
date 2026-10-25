@@ -22,6 +22,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/petfold/swarmblk/internal/bee"
+	"github.com/petfold/swarmblk/internal/snapshot"
 	"github.com/petfold/swarmblk/internal/store"
 )
 
@@ -126,36 +127,56 @@ func TestImport(t *testing.T) {
 	path, img := testImage(t)
 	ctx := context.Background()
 	distinct := map[string]bool{}
-	want, err := builder.FeedPipeline(ctx, builder.NewPipelineBuilder(ctx, putterFunc(func(_ context.Context, ch swarm.Chunk) error {
+	var changed int64
+	diskRoot, err := builder.FeedPipeline(ctx, builder.NewPipelineBuilder(ctx, putterFunc(func(_ context.Context, ch swarm.Chunk) error {
 		distinct[ch.Address().ByteString()] = true
 		return nil
 	}), false, redundancy.NONE), bytes.NewReader(img))
 	if err != nil {
 		t.Fatal(err)
 	}
+	for b := 0; b < len(img); b += swarm.ChunkSize {
+		if !bytes.Equal(img[b:b+swarm.ChunkSize], make([]byte, swarm.ChunkSize)) {
+			changed++
+		}
+	}
 
 	b := &fakeBee{immutable: true, capacity: 32}
-	root, s, err := startImport(t, b, path)
+	ref, s, err := startImport(t, b, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !root.Equal(want) {
-		t.Errorf("import gave root %s; Bee's pipeline builds %s", root, want)
+	snap, err := snapshot.Read(ctx, s, ref)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if m := snap.Meta; !m.DiskRoot.Equal(diskRoot) || m.Size != int64(len(img)) || m.Parent != nil || m.Lineage != nil ||
+		len(m.Batches) != 1 || m.Batches[0] != testBatch || m.Stats.ChangedBlocks != changed || m.Stats.NewChunks != int64(len(distinct)) {
+		t.Errorf("meta.json %+v; want disk root %s, %d changed blocks, %d new chunks", m, diskRoot, changed, len(distinct))
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.got) != len(distinct) || !b.got[len(b.got)-1].Equal(root) {
-		t.Errorf("Bee got %d chunks, want the %d distinct ones with the root last", len(b.got), len(distinct))
+	if !b.got[len(b.got)-1].Equal(ref) {
+		t.Errorf("the last chunk sent is %s, want the manifest's root %s", b.got[len(b.got)-1], ref)
 	}
 	sent := map[string]bool{}
 	for _, a := range b.got {
-		if !distinct[a.ByteString()] || sent[a.ByteString()] {
-			t.Fatalf("chunk %s sent twice or not part of the tree", a)
+		if sent[a.ByteString()] {
+			t.Fatalf("chunk %s sent twice", a)
 		}
 		sent[a.ByteString()] = true
 		if _, err := s.Get(ctx, a); err != nil {
 			t.Fatalf("the local store lacks chunk %s: %v", a, err)
 		}
+	}
+	for k := range distinct {
+		if !sent[k] {
+			t.Fatalf("chunk %s of the disk tree was not sent", swarm.NewAddress([]byte(k)))
+		}
+	}
+	if extra := len(b.got) - len(distinct); extra < 2 || extra > 10 {
+		t.Errorf("%d chunks besides the disk tree's, want the manifest's few", extra)
 	}
 }
 

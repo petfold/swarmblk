@@ -11,7 +11,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 
 ## Where we are
 
-**Phase 1: the offline checkpointer.** Phase 0 is done ([results](docs/results/phase0-2026-10-25.md)), and its gate was decided on 2026-10-25: go on. `internal/tree` has geometry, path arithmetic, zero subtrees, incremental rebuild and diff, `internal/store` keeps verified chunks on disk, and `internal/bee` uploads chunks (single or streamed), tracks sync by tag and reads batches and buckets. `swarmblk import` builds an image's tree with Bee's pipeline into the store, streams its distinct chunks and waits for sync; its root matches Phase 0's `/bytes` upload. Next are the snapshot manifest (`internal/snapshot`) and the lineage feed (`internal/lineage`, with `/soc` and `/feeds`), then `checkpoint`. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
+**Phase 1: the offline checkpointer.** Phase 0 is done ([results](docs/results/phase0-2026-10-25.md)), and its gate was decided on 2026-10-25: go on. `internal/tree` has geometry, path arithmetic, zero subtrees, incremental rebuild and diff, `internal/store` keeps verified chunks on disk, and `internal/bee` uploads chunks (single or streamed), tracks sync by tag and reads batches and buckets. `swarmblk import` builds an image's tree with Bee's pipeline into the store, wraps it in a snapshot manifest (`internal/snapshot`) and uploads both, root last; the disk root matches Phase 0's `/bytes` upload, and stock Bee serves the snapshot under `/bzz`. Next is the lineage feed (`internal/lineage`, with `/soc` and `/feeds`), then `checkpoint`. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
 
 ## Hard rules
 
