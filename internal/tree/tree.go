@@ -64,6 +64,21 @@ func (g Geometry) Refs(j int) int {
 	return swarm.Branches
 }
 
+// Index returns the number, within level j, of the chunk on leaf b's path
+// (SPEC §2): floor(b / 128^j). Level 0 is the leaf itself, and the root is
+// always number 0.
+func (g Geometry) Index(b int64, j int) int64 { return b >> (7 * j) }
+
+// Slot returns which reference of the level-j chunk (j ≥ 1) on leaf b's path
+// leads towards b (SPEC §2): floor(b / 128^(j−1)) mod 128 below the root, and
+// floor(b / 128^(L−1)) at the root.
+func (g Geometry) Slot(b int64, j int) int {
+	if j == g.Levels {
+		return int(g.Index(b, j-1))
+	}
+	return int(g.Index(b, j-1) % swarm.Branches)
+}
+
 // Root reads a disk's geometry from the span of its root chunk and returns it
 // with the root's references.
 func Root(ch swarm.Chunk) (Geometry, []swarm.Address, error) {

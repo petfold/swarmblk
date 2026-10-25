@@ -90,6 +90,7 @@ func TestZerosMatchBee(t *testing.T) {
 // geometry. Every leaf must hold the block of the image that SPEC §2 puts
 // there, and every all-zero subtree must be Z_j.
 func TestWalkMatchesBee(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, size := range []int{64 << 20, 128 << 20} { // L = 2 and F = 128; L = 3 and F = 2
 		img := sparseImage(size)

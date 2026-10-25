@@ -26,7 +26,7 @@ Decided 2026-10-25: go on to Phase 1. With stock tools the best cold boot took 2
 Prove the data model: overlay changes become a new Swarm tree that restores elsewhere, with roots identical to Bee's.
 
 - [ ] Module `github.com/petfold/swarmblk`; depend on `github.com/ethersphere/bee/v2` at the latest 2.8.x (v2.8.3 at writing); CI running `go test ./...`
-- [ ] `internal/tree`: geometry, path arithmetic, zero subtrees, incremental rebuild along dirty paths, tree diff; test vectors against Bee's `pkg/file/pipeline/builder` (SPEC §14, I1)
+- [x] `internal/tree`: geometry, path arithmetic, zero subtrees, incremental rebuild along dirty paths, tree diff; test vectors against Bee's `pkg/file/pipeline/builder` (SPEC §14, I1)
 - [ ] `internal/bee`: HTTP client for `/chunks`, `/chunks/stream`, `/tags`, `/soc`, `/feeds`, `/stamps`, `/stamps/{id}/buckets`
 - [ ] `internal/store`: content-addressed chunk store (tree cache and chunk cache), verified on write
 - [ ] `internal/snapshot`: Mantaray manifest and `meta.json` (SPEC §5)
