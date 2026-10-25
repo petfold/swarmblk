@@ -8,16 +8,18 @@ Each phase ends at a gate that decides whether the next is worth building. Phase
 
 Boot an unmodified image from Swarm through QEMU's HTTP block driver and measure. Runbook: [docs/PHASE0.md](docs/PHASE0.md).
 
-- [ ] Bee ≥ 2.8.2 on node A; a second node B (light) on another machine; immutable depth-22 test batch
-- [ ] 8 GiB raw Ubuntu cloud image and cloud-init seed
-- [ ] Upload at redundancy level 0; record reference, upload time and tag counters
+- [x] Bee ≥ 2.8.2 on node A; a second node B (light) on another machine; immutable test batch (depth 21 sufficed)
+- [x] 8 GiB raw Ubuntu cloud image and cloud-init seed
+- [x] Upload at redundancy level 0; record reference, upload time and tag counters
 - [x] `tools/beeproxy`: logging reverse proxy that can inject `Swarm-Lookahead-Buffer-Size` and `Swarm-Cache`
 - [x] `cmd/chunkprobe`: intermediate walk plus random-leaf latency at several concurrency levels
-- [ ] Boot runs: cold with and without lookahead, warm, hot
-- [ ] Chunk probe on nodes A and B
-- [ ] `docs/results/phase0-<date>.md` from the template
+- [x] Boot runs: cold with and without lookahead, warm, hot (cold boots fail with stock tools)
+- [x] Chunk probe on nodes A and B
+- [x] `docs/results/phase0-<date>.md` from the template: [2026-10-25](docs/results/phase0-2026-10-25.md)
 
 **Gate:** cold boot within a bound Peter sets after seeing the numbers, and a boot working set small enough to prefetch.
+
+The runs are done; the gate decision is Peter's.
 
 ## Phase 1 — Offline checkpointer (Go)
 
