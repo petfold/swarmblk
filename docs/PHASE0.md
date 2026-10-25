@@ -182,3 +182,5 @@ Proposed gate and decision:
 - **Bee before 2.8.2 returns wrong `HEAD` headers**, and QEMU refuses the backing file unless the newer `file.force-range=on` option is set.
 - **Forgetting `Swarm-Redundancy-Level: 0`** gives an erasure-coded, 119-ary tree. It still boots, but it is not the swarmblk format, and the chunk counts will be off.
 - **A full node may already hold some chunks** in its reserve, so take network numbers from a light node.
+- **systemd waits 90 s for each device in `/etc/fstab`.** In the cold runs, probing Ubuntu's `/boot` and `/boot/efi` partitions took longer, and the guest fell into emergency mode.
+- **Bee cuts off a `/bytes` response when a fetch fails mid-stream,** since the status is already sent, and QEMU passes the cut-off to the guest as an I/O error.
