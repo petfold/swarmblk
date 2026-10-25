@@ -281,6 +281,7 @@ Decisions:
 | 2026-10-25 | Name: swarmblk | Functional; matches swarmfs and Linux `-blk` naming | mothball, combdrive, capped |
 | 2026-10-25 | License: BSD 3-Clause | Matches Bee, which swarmblk imports, and swarmfs and s3warm | — |
 | 2026-10-25 | Hydration is a per-disk policy: lazy, hydrate, or re-stamp only | Most workloads never read most blocks; disaster-recovery restores and takeovers need the data | Always hydrating every disk |
+| 2026-10-25 | Phase 0 gate: go on to Phase 1; set the cold-boot bound against an engine prototype | Stock tools cold-booted Ubuntu in 22 minutes at best; the 307 MiB working set fetched in 7 minutes engine-style | Stopping, or tuning the stock path further |
 | 2026-10-25 | Budget reads at full bandwidth price | Phase 0's free share (about 82%) grows with connection count and is unlikely to last | Relying on the free allowance |
 
 ## 13. References

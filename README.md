@@ -4,7 +4,7 @@ A virtual disk backed by Ethereum Swarm.
 
 Each snapshot is a standard Swarm file, so its chunk tree is the block map. Unchanged blocks are shared between snapshots, zero regions cost nothing, and any Swarm tool can fetch a snapshot as a raw image and verify it by its root.
 
-**Status:** design done; Phase 0 (measurement) under way. See [ROADMAP.md](ROADMAP.md).
+**Status:** Phase 0 (measurement) done; Phase 1 (the offline checkpointer) under way. See [ROADMAP.md](ROADMAP.md).
 
 ## Why a block device
 

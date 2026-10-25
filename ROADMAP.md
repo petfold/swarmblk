@@ -2,7 +2,7 @@
 
 Each phase ends at a gate that decides whether the next is worth building. Phase 0 is days of work, not weeks. Details: [docs/DESIGN.md](docs/DESIGN.md), [docs/SPEC.md](docs/SPEC.md).
 
-**Current phase: 0.**
+**Current phase: 1.**
 
 ## Phase 0 — Measure with stock tools
 
@@ -19,7 +19,7 @@ Boot an unmodified image from Swarm through QEMU's HTTP block driver and measure
 
 **Gate:** cold boot within a bound Peter sets after seeing the numbers, and a boot working set small enough to prefetch.
 
-The runs are done; the gate decision is Peter's.
+Decided 2026-10-25: go on to Phase 1. With stock tools the best cold boot took 22 minutes and the default settings never completed, while the working set (307 MiB) fetched in 7 minutes engine-style. The cold-boot bound is set when an engine prototype can be measured.
 
 ## Phase 1 — Offline checkpointer (Go)
 

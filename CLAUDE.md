@@ -11,7 +11,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 
 ## Where we are
 
-**Phase 0: measure with stock tools.** The runs are done ([results](docs/results/phase0-2026-10-25.md)): stock tools cannot cold-boot Ubuntu through a light node, and the boot working set is 307 MiB. Peter decides the gate next. Phase 1, the offline checkpointer, follows. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
+**Phase 1: the offline checkpointer.** Phase 0 is done ([results](docs/results/phase0-2026-10-25.md)), and its gate was decided on 2026-10-25: go on. `internal/tree` has geometry, path arithmetic, zero subtrees, incremental rebuild and diff; next are `internal/store`, more of `internal/bee`, then `swarmblk import`. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
 
 ## Hard rules
 
