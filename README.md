@@ -36,7 +36,7 @@ It is too slow for cold random reads over large data, such as a database scannin
 - An instructor publishes a lab VM, thirty students each run a branch, and only their own changes are stored.
 - Kiosks or edge devices update by fetching only the blocks that changed between two snapshots.
 - An investigator mounts an evidence image read-only and fetches only the regions they examine.
-- A legacy application in an old OS image stays runnable for decades, with no installation media needed.
+- A legacy application in an old OS image stays runnable for as long as you keep paying its postage, with no installation media needed.
 
 Disaster recovery is the first target, and golden images for CI and labs the second ([DESIGN §9](docs/DESIGN.md#9-use-cases-ranked)).
 
