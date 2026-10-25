@@ -6,6 +6,7 @@ require (
 	github.com/ethereum/go-ethereum v1.17.3
 	github.com/ethersphere/bee/v2 v2.8.3
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	golang.org/x/crypto v0.55.0
 	golang.org/x/sync v0.22.0
 )
 
@@ -61,7 +62,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20260718201538-764159d718ef // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

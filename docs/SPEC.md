@@ -136,7 +136,9 @@ Feed updates are built with Bee's `pkg/feeds` and `pkg/soc` and published with `
 - Owner: the lineage key, a secp256k1 key held by exactly one host.
 - Topic: `keccak256(utf8("swarmblk/lineage/") ‖ lineage_id)`, where `lineage_id` is 16 random bytes chosen at lineage creation.
 - Update *n* carries the reference of snapshot *n*'s manifest. Index 0 is the lineage's first snapshot.
-- A writer publishes index *n*+1 only after reading its own head as *n*.
+- Payload, the content of the chunk that the update wraps: 40 bytes, the snapshot's `created` time as an 8-byte big-endian count of Unix seconds, then the 32-byte manifest reference. This is Bee's legacy feed payload, so `GET /feeds` and `/bzz` resolve it to the manifest. A retried publish signs the same bytes.
+- A writer publishes index *n*+1 only after reading its own head as *n*. If it reads *n*+1 naming the same manifest, an earlier attempt succeeded.
+- Readers take the head's index from `GET /feeds`, then fetch the update with `GET /chunks/{address}` and check its signature themselves.
 
 **Disk registry (draft, Phase 4).**
 
@@ -183,7 +185,7 @@ Under `$SWARMBLK_HOME` (default `~/.local/share/swarmblk`), mode 0700:
 |---|---|
 | `chunks/` | content-addressed chunk store: tree cache (all intermediates of known snapshots) and chunk cache (leaves), verified on write |
 | `state.db` | embedded key-value store (e.g. bbolt): lineages (id, owner, topic, head index, head manifest), batches (id, bound host, depth, TTL forecast, fullest bucket), coverage (address → batch ids), epochs (Phase 2) |
-| `keys/` | lineage keys, mode 0600; never logged or committed |
+| `keys/` | lineage keys, one file `<owner>.key` each, holding the private key in hex, mode 0600; never logged or committed. A key file that other users can read is refused |
 
 ## 11. Write epochs (draft, Phase 2)
 
@@ -220,12 +222,12 @@ Bee ≥ 2.8.2. All requests go to `$SWARMBLK_BEE_URL` (default `http://localhost
 |---|---|---|
 | `POST /bytes` | Phase 0 image upload | Set `Swarm-Redundancy-Level: 0` and `Swarm-Postage-Batch-Id`; the response carries `swarm-tag` |
 | `GET`/`HEAD /bytes/{ref}` | Phase 0 boot through QEMU | `HEAD` advertises ranges from 2.8.2; `Swarm-Lookahead-Buffer-Size: 0` turns off Bee's lookahead; `Swarm-Cache: false` skips caching |
-| `GET /chunks/{address}` | engine reads | Returns span + payload; verify locally; honours `Swarm-Cache`. The BMT hash pads with zeros, so a valid payload may lack trailing zeros: read a leaf as span bytes, zero-padded |
+| `GET /chunks/{address}` | engine reads, feed updates | Returns span + payload; verify locally; honours `Swarm-Cache`. The BMT hash pads with zeros, so a valid payload may lack trailing zeros: read a leaf as span bytes, zero-padded. A single-owner chunk comes back whole: ID, signature, span and payload |
 | `POST /chunks` | single uploads | `Swarm-Postage-Batch-Id` or pre-signed `Swarm-Postage-Stamp`; `Swarm-Tag` |
 | `GET /chunks/stream` (WebSocket) | bulk uploads | One ack per chunk means stored locally, not synced; `Swarm-Tag`; batch id or pre-signed stamps |
 | `POST /tags`, `GET /tags/{uid}` | sync tracking | Counters `split`, `seen`, `stored`, `sent`, `synced` |
-| `POST /soc/{owner}/{id}?sig=` | feed updates | Built with `pkg/feeds` and `pkg/soc` |
-| `GET /feeds/{owner}/{topic}` | latest snapshot | Returns `swarm-feed-index` |
+| `POST /soc/{owner}/{id}?sig=` | feed updates | Built with `pkg/feeds` and `pkg/soc`; the body is the wrapped chunk (span + payload). With `Swarm-Deferred-Upload: false` and no `Swarm-Tag`, Bee pushes the chunk and answers after a receipt |
+| `GET /feeds/{owner}/{topic}` | latest snapshot | `Swarm-Feed-Index` gives the index; `Swarm-Only-Root-Chunk: true` skips the content. A feed without updates gets 404 `no update found`. The lookup drops any probe slower than 1 s, so the index can lag |
 | `GET /stamps`, `/stamps/{id}`, `/stamps/{id}/buckets` | batch status, TTL, bucket fill | |
 | `POST /stamps/{amount}/{depth}` | buying a batch | Header `immutable: true`; an operator action, not automatic |
 | `PATCH /stamps/topup/{id}/{amount}`, `/stamps/dilute/{id}/{depth}` | retention manager | |

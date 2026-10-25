@@ -258,7 +258,7 @@ Measurements (Phase 0):
 - Boot working set and read order for two or three common images, and whether traces survive kernel updates.
 - Push-sync throughput for checkpoint-sized uploads through `/chunks/stream`.
 - Hydration speed within the free bandwidth allowance, light versus full node.
-- Latency and staleness of feed lookups for the latest snapshot.
+- Latency and staleness of feed lookups for the latest snapshot. First numbers (2026-10-26, light nodes): a lookup takes 2–5 s, and a new update showed on the first poll, from a second node too. Bee's lookup drops probes slower than 1 s, so a head can lag under load.
 
 Decisions:
 
@@ -283,6 +283,7 @@ Decisions:
 | 2026-10-25 | Hydration is a per-disk policy: lazy, hydrate, or re-stamp only | Most workloads never read most blocks; disaster-recovery restores and takeovers need the data | Always hydrating every disk |
 | 2026-10-25 | Phase 0 gate: go on to Phase 1; set the cold-boot bound against an engine prototype | Stock tools cold-booted Ubuntu in 22 minutes at best; the 307 MiB working set fetched in 7 minutes engine-style | Stopping, or tuning the stock path further |
 | 2026-10-25 | Budget reads at full bandwidth price | Phase 0's free share (about 82%) grows with connection count and is unlikely to last | Relying on the free allowance |
+| 2026-10-26 | Lineage updates carry Bee's legacy feed payload: a time and the manifest reference | Stock Bee resolves it through `GET /feeds` and `/bzz`; Swarm tools read it as a reference; fixed size | Wrapping the manifest's root chunk (Bee's newer payload) |
 
 ## 13. References
 
