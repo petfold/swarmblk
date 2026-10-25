@@ -256,6 +256,7 @@ Decisions:
 | 2026-10-25 | Public bases unencrypted; private disks use guest LUKS (provisional) | Keeps dedup between snapshots; keys stay off the host | Swarm random-key chunk encryption as the default |
 | 2026-10-25 | Disaster recovery with live restore first (provisional) | Tolerates read latency; provider independence | General-purpose VM disks first |
 | 2026-10-25 | Name: swarmblk | Functional; matches swarmfs and Linux `-blk` naming | mothball, combdrive, capped |
+| 2026-10-25 | License: BSD 3-Clause | Matches Bee, which swarmblk imports, and swarmfs and s3warm | — |
 
 ## 12. References
 

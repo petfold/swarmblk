@@ -64,4 +64,4 @@ Requires Bee 2.8.2 or later.
 
 ## License
 
-To be decided. Bee, which swarmblk uses as a library, is BSD-licensed.
+[BSD 3-Clause](LICENSE), the same as Bee, which swarmblk uses as a library.
