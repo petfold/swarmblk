@@ -89,9 +89,9 @@ go run ./tools/beeproxy -bee http://<node B>:1633 -nocache -log cold-la-1.csv
 Create a fresh overlay per run, pointing at the proxy (`http://127.0.0.1:1636`):
 
 ```sh
-mkoverlay () {   # $1 = overlay file, $2 = proxy URL
+mkoverlay () {   # $1 = overlay file, $2 = proxy URL, $3 = QEMU readahead (default 64k)
   qemu-img create -f qcow2 -F raw \
-    -b "json:{\"file.driver\":\"http\",\"file.url\":\"$2/bytes/$REF\",\"file.readahead\":\"64k\",\"file.timeout\":60}" \
+    -b "json:{\"file.driver\":\"http\",\"file.url\":\"$2/bytes/$REF\",\"file.readahead\":\"${3:-64k}\",\"file.timeout\":60}" \
     "$1"
 }
 boot () {        # $1 = overlay file, $2 = log name
@@ -106,12 +106,22 @@ The boot is done when the console prints `Cloud-init v. … finished`. Note the 
 
 | Run | Bee node | Proxy flags | Overlay | What it shows |
 |---|---|---|---|---|
-| cold-la | B (light) | `-nocache` | fresh | first boot, Bee lookahead on (512 KiB for files over 10 MB) |
-| cold-nola | B (light) | `-nocache -lookahead 0` | fresh | first boot, lookahead off |
+| cold-la | B (light) | `-nocache` | fresh | first boot with Bee's lookahead: for files over 10 MB Bee reads 512 KiB and peeks at 512 KiB more, so a 128 KiB request fetches up to 1 MiB |
+| cold-nola | B (light) | `-nocache -lookahead 0` | fresh | first boot without it: Bee then serves a range in 32 KiB pieces, each waiting for its slowest chunk |
+| cold-tree | B (light), tree cached | `-nocache` | fresh | leaves cold and intermediate chunks local, as the engine will have them |
+| cold-tree-ra | B (light), tree cached | `-nocache` | fresh, readahead `1M` | the same, with fewer and larger requests while the boot loader reads one block at a time |
 | warm | A | none | fresh | chunks pinned in node A's local store (§3) |
 | hot | any | any | reused from a previous run | copy-on-read has hydrated the overlay |
 
-Run the two cold cases more than once and alternate them. Forwarding nodes cache chunks along retrieval paths, so later runs can get faster.
+With `-nocache`, node B keeps nothing it fetches, so every request also re-fetches the intermediate chunks above its leaves. Chunks already cached on node B are still served from its cache. So the order matters:
+
+1. cold-la and cold-nola, alternating, more than once. Forwarding nodes cache chunks along retrieval paths, so later runs can get faster.
+2. The chunk probe on node B (§6), while the tree is still cold there.
+3. Cache the tree on node B with a walk that leaves out `-nocache`, then the cold-tree runs:
+   ```sh
+   go run ./cmd/chunkprobe -bee http://<node B>:1633 -ref $REF -n 1 -c 128   # caches every intermediate chunk and one leaf
+   ```
+4. warm and hot.
 
 After each cold boot, measure what the overlay holds (bytes read through copy-on-read plus bytes the guest wrote):
 
@@ -122,6 +132,8 @@ qemu-img map --output=json overlay.qcow2 | jq '[.[] | select(.data and .depth ==
 Keep every proxy log; Phase 2 turns one into the first `prefetch.bin`.
 
 ## 6. Chunk probe
+
+Run it on node B before caching the tree there (§5, step 2):
 
 ```sh
 go run ./cmd/chunkprobe -bee http://<node B>:1633 -ref $REF -nocache
@@ -142,6 +154,8 @@ Upload: wall time; tag split / seen / synced; time until synced stopped rising.
 |---|---|---|---|---|---|
 | cold-la | | | | | |
 | cold-nola | | | | | |
+| cold-tree | | | | | |
+| cold-tree-ra | | | | | |
 | warm | | | | | |
 | hot | | | | | |
 
