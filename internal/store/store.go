@@ -50,16 +50,18 @@ func (s *Store) path(addr swarm.Address) string {
 	return filepath.Join(s.dir, h[:2], h[2:4], h)
 }
 
-// Put checks ch against its address and stores it. A data chunk, whose span
-// equals its payload length, is stored as the payload alone, so a full leaf
-// takes one 4 KiB block on disk; other chunks keep their span.
+// Put checks ch against its address and stores it, unless the store already
+// holds that address: a stored chunk was checked when it was written. A data
+// chunk, whose span equals its payload length, is stored as the payload
+// alone, so a full leaf takes one 4 KiB block on disk; other chunks keep
+// their span.
 func (s *Store) Put(_ context.Context, ch swarm.Chunk) error {
-	if !cac.Valid(ch) {
-		return fmt.Errorf("chunk %s: %w", ch.Address(), storage.ErrInvalidChunk)
-	}
 	p := s.path(ch.Address())
 	if _, err := os.Stat(p); err == nil {
 		return nil // the same address always holds the same chunk
+	}
+	if !cac.Valid(ch) {
+		return fmt.Errorf("chunk %s: %w", ch.Address(), storage.ErrInvalidChunk)
 	}
 	data := ch.Data()
 	if binary.LittleEndian.Uint64(data) == uint64(len(data)-swarm.SpanSize) {
