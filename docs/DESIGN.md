@@ -208,6 +208,7 @@ flowchart TD
 - **VMs through NBD.** QEMU's block drivers live inside the QEMU tree, so a custom one means patching QEMU. QEMU's built-in NBD client already uses NBD block status, so an external server reaches VMs unchanged.
 - **Host block devices through kernel NBD now, ublk later.** ublk (io_uring, Linux 6.0+) is faster. Both can deadlock under memory pressure if the engine or Bee needs memory to finish writeback, so mark both processes with `PR_SET_IO_FLUSHER`, lock their memory and never swap onto the device.
 - **vhost-user-blk** is the later path to VM-grade performance.
+- **Bare metal** needs a node before the operating system runs. An initramfs can start Bee and the engine and mount the root disk over NBD (dracut has an NBD root module); [deboot](https://debootdevs.github.io/deboot/) already starts Bee in an initramfs, to download a read-only squashfs root. Or a server on the local network exports the disk to a machine that boots with iPXE.
 - **Write the engine in Go.** It can import Bee's own BMT, CAC, splitter, Mantaray, feeds and SOC packages (`github.com/ethersphere/bee/v2/pkg/...`), so trees match Bee's byte for byte. Ethersphere's beekeeper imports Bee the same way.
 
 The engine holds the disk's state; Bee holds each batch's stamp issuer, which must never be shared or lost. Bee accepts pre-signed stamps on `/chunks` and `/chunks/stream`, so if the engine later signs its own stamps and keeps verifying every chunk, Bee can become a remote gateway instead of a local node.
@@ -279,6 +280,7 @@ Prior art:
 - [dm-clone](https://docs.kernel.org/admin-guide/device-mapper/dm-clone.html): a writable clone usable at once and hydrated in the background.
 - [QEMU dirty bitmaps](https://qemu.googlesource.com/qemu/+/refs/tags/v8.0.5/docs/interop/bitmaps.rst): persistent change tracking in qcow2 for incremental backup.
 - [Slacker, USENIX FAST '16](https://usenix.org/node/194431): lazy container images; start-up reads 6.4% of pulled data.
+- [deboot](https://debootdevs.github.io/deboot/) ([repo](https://github.com/debootdevs/deboot)): boots bare metal or VMs through GRUB or U-Boot into an initramfs that starts a Bee node and downloads a read-only squashfs root from Swarm into memory. A Swarm grant project, 2022–2024.
 
 Sources checked (Bee at commit [a98e5bd](https://github.com/ethersphere/bee/tree/a98e5bd433426864d1753565517e4391e1879195), 23 October 2026):
 
