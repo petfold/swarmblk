@@ -2,3 +2,8 @@
 *.raw
 *.img
 *.qcow2
+
+# Binaries that go build leaves in the repo root
+/beeproxy
+/chunkprobe
+/swarmblk
