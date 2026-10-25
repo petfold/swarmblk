@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/ethersphere/bee/v2 v2.8.3
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	golang.org/x/sync v0.22.0
 )
 
