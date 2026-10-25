@@ -217,7 +217,7 @@ Bee ≥ 2.8.2. All requests go to `$SWARMBLK_BEE_URL` (default `http://localhost
 |---|---|---|
 | `POST /bytes` | Phase 0 image upload | Set `Swarm-Redundancy-Level: 0` and `Swarm-Postage-Batch-Id`; the response carries `swarm-tag` |
 | `GET`/`HEAD /bytes/{ref}` | Phase 0 boot through QEMU | `HEAD` advertises ranges from 2.8.2; `Swarm-Lookahead-Buffer-Size: 0` turns off Bee's lookahead; `Swarm-Cache: false` skips caching |
-| `GET /chunks/{address}` | engine reads | Returns span + payload; verify locally; honours `Swarm-Cache` |
+| `GET /chunks/{address}` | engine reads | Returns span + payload; verify locally; honours `Swarm-Cache`. The BMT hash pads with zeros, so a valid payload may lack trailing zeros: read a leaf as span bytes, zero-padded |
 | `POST /chunks` | single uploads | `Swarm-Postage-Batch-Id` or pre-signed `Swarm-Postage-Stamp`; `Swarm-Tag` |
 | `GET /chunks/stream` (WebSocket) | bulk uploads | One ack per chunk means stored locally, not synced; `Swarm-Tag`; batch id or pre-signed stamps |
 | `POST /tags`, `GET /tags/{uid}` | sync tracking | Counters `split`, `seen`, `stored`, `sent`, `synced` |
