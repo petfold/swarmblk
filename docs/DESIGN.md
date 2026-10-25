@@ -6,13 +6,14 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. A local engin
 
 ## 1. Decisions at a glance
 
-1. **A snapshot is an ordinary Swarm file**, uploaded at redundancy level 0. Its chunk tree is the block map; there is no separate mapping structure.
-2. **Phase 0 uses stock tools.** QEMU's HTTP block driver boots from a Bee `/bytes` URL under a local qcow2 overlay. Measure before building the engine.
-3. **Postage is the central design problem.** Immutable batches only, one stamp issuer per batch, and rotation that re-stamps the deduplicated live set.
-4. **Encryption.** Public base images stay unencrypted; private disks use LUKS inside the guest (provisional, see §10).
-5. **One writer per lineage.** What looks like sharing becomes branching; shared writable disks are out of scope.
-6. **First application: VM disaster recovery with live restore**, then golden images (provisional, see §10).
-7. **An external engine over NBD, written in Go**, importing Bee's own packages. No QEMU block driver.
+1. **A block device, so guests run unmodified.** A snapshot is a whole machine, crash-consistent, and nothing above the block layer needs to know about Swarm. In return, cold reads wait for Swarm, and a single file comes out only through the guest's filesystem. The [README](../README.md#why-a-block-device) compares the alternatives and says where this is fast enough.
+2. **A snapshot is an ordinary Swarm file**, uploaded at redundancy level 0. Its chunk tree is the block map; there is no separate mapping structure.
+3. **Phase 0 uses stock tools.** QEMU's HTTP block driver boots from a Bee `/bytes` URL under a local qcow2 overlay. Measure before building the engine.
+4. **Postage is the central design problem.** Immutable batches only, one stamp issuer per batch, and rotation that re-stamps the deduplicated live set.
+5. **Encryption.** Public base images stay unencrypted; private disks use LUKS inside the guest (provisional, see §10).
+6. **One writer per lineage.** What looks like sharing becomes branching; shared writable disks are out of scope.
+7. **First application: VM disaster recovery with live restore**, then golden images (provisional, see §10).
+8. **An external engine over NBD, written in Go**, importing Bee's own packages. No QEMU block driver.
 
 ## 2. Data model
 
@@ -224,7 +225,7 @@ VM disaster recovery comes first: its reads are rare and tolerate latency, and p
 | 3 | Forensic and archival images | Immutable, verifiable by root | Needs a standard hash (SHA-256) beside the Swarm root, encryption, and a trusted timestamp, since stamp timestamps are set by the uploader |
 | Stretch | Suspend to Swarm, resume elsewhere | Disk plus RAM (the QEMU migration stream) makes "portable machine state" literal | Large memory images; needs lazy page loading |
 
-Legacy software that needs a disk is served by the first two. General-purpose VM disks rank lower: write-heavy, latency-sensitive guests run on the local overlay anyway, so Swarm adds little beyond backup unless machines move.
+Legacy software that needs a disk is served by the first two. General-purpose VM disks rank lower: write-heavy, latency-sensitive guests run on the local overlay anyway, so Swarm adds little beyond backup unless machines move. The [README](../README.md#where-it-is-fast-enough) says where swarmblk is fast enough and gives examples.
 
 ## 10. Open questions
 
@@ -246,6 +247,7 @@ Decisions:
 
 | Date | Decision | Why | Rejected |
 |---|---|---|---|
+| 2026-10-25 | A block device; guests run unmodified | Every OS, filesystem and application already uses the block layer; a snapshot is a whole machine, crash-consistent | Files or objects (swarmfs, s3warm); storage built for one application; downloading whole images |
 | 2026-10-25 | A snapshot is a Swarm file at redundancy level 0 | Sharing, zero dedup, cheap diffs, interoperability with every Swarm tool | A separate mapping tree (v1); erasure coding by default |
 | 2026-10-25 | External NBD engine, written in Go | No QEMU patches; Bee's packages give byte-identical trees | A QEMU block driver; a Python engine |
 | 2026-10-25 | Immutable batches, one stamp issuer per batch | Mutable wrap-around and cross-issuer index collisions evict live chunks | Mutable batches; batches shared across hosts |
