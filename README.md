@@ -38,7 +38,7 @@ It is too slow for cold random reads over large data, such as a database scannin
 - An investigator mounts an evidence image read-only and fetches only the regions they examine.
 - A legacy application in an old OS image stays runnable for as long as you keep paying its postage, with no installation media needed.
 
-Disaster recovery is the first target, and golden images for CI and labs the second ([DESIGN §9](docs/DESIGN.md#9-use-cases-ranked)).
+Disaster recovery is the first target, and golden images for CI and labs the second ([DESIGN §10](docs/DESIGN.md#10-use-cases-ranked)).
 
 ## How it works
 
@@ -46,6 +46,7 @@ Disaster recovery is the first target, and golden images for CI and labs the sec
 - **Writes** land on local storage first. A checkpoint uploads only the blocks whose content changed, rebuilds the path above them, and publishes the new root through a Swarm feed.
 - **Postage** is managed explicitly: immutable batches, one stamp issuer per batch, and rotation that re-stamps only live chunks.
 - **Interfaces:** NBD for QEMU and for Linux hosts, with ublk and vhost-user-blk later.
+- **Filesystems:** any, from ext4 and XFS to Btrfs, ZFS and NTFS. The choice affects snapshot size and read cost ([DESIGN §9](docs/DESIGN.md#9-filesystems-on-the-disk)).
 
 Details: [docs/DESIGN.md](docs/DESIGN.md) (architecture) and [docs/SPEC.md](docs/SPEC.md) (formats).
 

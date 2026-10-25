@@ -10,9 +10,9 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. A local engin
 2. **A snapshot is an ordinary Swarm file**, uploaded at redundancy level 0. Its chunk tree is the block map; there is no separate mapping structure.
 3. **Phase 0 uses stock tools.** QEMU's HTTP block driver boots from a Bee `/bytes` URL under a local qcow2 overlay. Measure before building the engine.
 4. **Postage is the central design problem.** Immutable batches only, one stamp issuer per batch, and rotation that re-stamps the deduplicated live set.
-5. **Encryption.** Public base images stay unencrypted; private disks use LUKS inside the guest (provisional, see §10).
+5. **Encryption.** Public base images stay unencrypted; private disks use LUKS inside the guest (provisional, see §11).
 6. **One writer per lineage.** What looks like sharing becomes branching; shared writable disks are out of scope.
-7. **First application: VM disaster recovery with live restore**, then golden images (provisional, see §10).
+7. **First application: VM disaster recovery with live restore**, then golden images (provisional, see §11).
 8. **An external engine over NBD, written in Go**, importing Bee's own packages. No QEMU block driver.
 
 ## 2. Data model
@@ -214,7 +214,19 @@ The engine holds the disk's state; Bee holds each batch's stamp issuer, which mu
 
 Phase 0's stock-tool setup and its pitfalls (QEMU's 5-second request timeout, 8 requests in flight, Bee's 512 KiB lookahead) are in [PHASE0.md](PHASE0.md). s3backer over s3warm would also run today, but it stores each block as a separate object and so loses the tree's sharing and diffs.
 
-## 9. Use cases, ranked
+## 9. Filesystems on the disk
+
+The guest sees an ordinary disk, so any filesystem works on it: ext4, XFS, Btrfs, ZFS, NTFS or FAT, inside partition tables, LVM or LUKS as usual, and swap or a database can use it raw. Any guest OS runs on it in a VM, and a Linux host can mount it through NBD. The filesystem never sees Swarm, but its habits set the costs:
+
+- **One writer at a time.** One machine mounts a disk read-write; others run branches of a snapshot (§7). Cluster filesystems such as GFS2 and OCFS2, which need several machines writing one disk at once, do not fit.
+- **The write pattern sets snapshot cost.** ext4 and XFS overwrite in place, so a checkpoint uploads about what changed, plus journal blocks. Copy-on-write filesystems (Btrfs, ZFS) write every change to a new place and rewrite the metadata above it, so each snapshot uploads more new chunks.
+- **Full scans are cold reads.** A boot or a working set touches a small part of the disk, but `fsck`, `find /`, a virus scan or a search indexer fetches most of it at Swarm latency.
+- **Discards keep snapshots thin.** With TRIM (`fstrim`, or `discard=unmap` in QEMU), freed blocks become the shared zero chunk (§4).
+- **Encryption hides zeros.** Inside LUKS a zero block is ciphertext, so free space stays free only if discards pass through, which reveals the free-space map (§6).
+- **Snapshots are crash-consistent.** Journaling filesystems recover on mount, as after a power cut; for application consistency, freeze the filesystem through the guest agent first (§4).
+- **Align to 4 KiB.** With 4 KiB filesystem blocks on 1 MiB-aligned partitions, today's defaults, each block is one chunk. A misaligned filesystem splits blocks across two chunks and can double what a checkpoint uploads.
+
+## 10. Use cases, ranked
 
 VM disaster recovery comes first: its reads are rare and tolerate latency, and provider independence is what Swarm offers best.
 
@@ -227,7 +239,7 @@ VM disaster recovery comes first: its reads are rare and tolerate latency, and p
 
 Legacy software that needs a disk is served by the first two. General-purpose VM disks rank lower: write-heavy, latency-sensitive guests run on the local overlay anyway, so Swarm adds little beyond backup unless machines move. The [README](../README.md#where-it-is-fast-enough) says where swarmblk is fast enough and gives examples.
 
-## 10. Open questions
+## 11. Open questions
 
 Measurements (Phase 0):
 
@@ -243,7 +255,7 @@ Decisions:
 - Default for private disks: guest LUKS (keys never touch the host) or engine-side convergent encryption (dedup across a fleet)? (Provisional: guest LUKS.)
 - Bee cannot answer "is this chunk stamped by a batch that lives past date *D*", so coverage is tracked client-side. Worth proposing such a query to Bee core?
 
-## 11. Decision log
+## 12. Decision log
 
 | Date | Decision | Why | Rejected |
 |---|---|---|---|
@@ -258,7 +270,7 @@ Decisions:
 | 2026-10-25 | Name: swarmblk | Functional; matches swarmfs and Linux `-blk` naming | mothball, combdrive, capped |
 | 2026-10-25 | License: BSD 3-Clause | Matches Bee, which swarmblk imports, and swarmfs and s3warm | — |
 
-## 12. References
+## 13. References
 
 Prior art:
 
