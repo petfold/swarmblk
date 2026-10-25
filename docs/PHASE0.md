@@ -45,12 +45,13 @@ cloud-localds seed.img user-data
 
 ## 3. Upload at redundancy level 0
 
-`-T` streams the file; `--data-binary @file` would load 8 GiB into memory.
+`-T` streams the file; `--data-binary @file` would load 8 GiB into memory. `Swarm-Pin: true` keeps every chunk in node A's local store for the warm runs. Without it, Bee deletes uploaded chunks once they are synced, and node A fetches them back from the network.
 
 ```sh
 curl -s -X POST "$BEE/bytes" \
   -H "Swarm-Postage-Batch-Id: $BATCH" \
   -H "Swarm-Redundancy-Level: 0" \
+  -H "Swarm-Pin: true" \
   -H "Content-Type: application/octet-stream" \
   -T disk.raw -D upload-headers.txt | tee upload.json
 REF=$(jq -r .reference upload.json)
@@ -107,7 +108,7 @@ The boot is done when the console prints `Cloud-init v. … finished`. Note the 
 |---|---|---|---|---|
 | cold-la | B (light) | `-nocache` | fresh | first boot, Bee lookahead on (512 KiB for files over 10 MB) |
 | cold-nola | B (light) | `-nocache -lookahead 0` | fresh | first boot, lookahead off |
-| warm | A | none | fresh | chunks already in Bee's local store |
+| warm | A | none | fresh | chunks pinned in node A's local store (§3) |
 | hot | any | any | reused from a previous run | copy-on-read has hydrated the overlay |
 
 Run the two cold cases more than once and alternate them. Forwarding nodes cache chunks along retrieval paths, so later runs can get faster.
