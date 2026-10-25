@@ -110,6 +110,7 @@ The boot is done when the console prints `Cloud-init v. … finished`. Note the 
 | cold-nola | B (light) | `-nocache -lookahead 0` | fresh | first boot without it: Bee then serves a range in 32 KiB pieces, each waiting for its slowest chunk |
 | cold-tree | B (light), tree cached | `-nocache` | fresh | leaves cold and intermediate chunks local, as the engine will have them |
 | cold-tree-ra | B (light), tree cached | `-nocache` | fresh, readahead `1M` | the same, with fewer and larger requests while the boot loader reads one block at a time |
+| cold-tree-la128 | B (light), tree cached | `-nocache -lookahead 131072` | fresh | the same, with Bee's lookahead equal to QEMU's 128 KiB requests: the only stock setting that cold-booted Ubuntu on 2026-10-25 |
 | warm | A | none | fresh | chunks pinned in node A's local store (§3) |
 | hot | any | any | reused from a previous run | copy-on-read has hydrated the overlay |
 
@@ -156,6 +157,7 @@ Upload: wall time; tag split / seen / synced; time until synced stopped rising.
 | cold-nola | | | | | |
 | cold-tree | | | | | |
 | cold-tree-ra | | | | | |
+| cold-tree-la128 | | | | | |
 | warm | | | | | |
 | hot | | | | | |
 
