@@ -28,7 +28,7 @@ Prove the data model: overlay changes become a new Swarm tree that restores else
 - [x] Module `github.com/petfold/swarmblk`; depend on `github.com/ethersphere/bee/v2` at the latest 2.8.x (v2.8.3 at writing); CI running `go test ./...`
 - [x] `internal/tree`: geometry, path arithmetic, zero subtrees, incremental rebuild along dirty paths, tree diff; test vectors against Bee's `pkg/file/pipeline/builder` (SPEC §14, I1)
 - [ ] `internal/bee`: HTTP client for `/chunks`, `/chunks/stream`, `/tags`, `/soc`, `/feeds`, `/stamps`, `/stamps/{id}/buckets`
-- [ ] `internal/store`: content-addressed chunk store (tree cache and chunk cache), verified on write
+- [x] `internal/store`: content-addressed chunk store (tree cache and chunk cache), verified on write
 - [ ] `internal/snapshot`: Mantaray manifest and `meta.json` (SPEC §5)
 - [ ] `internal/lineage`: lineage feed read and write (SPEC §7)
 - [ ] `swarmblk import <image.raw>`: chunk-level upload at redundancy 0, producing the same root as Phase 0's `/bytes` upload
