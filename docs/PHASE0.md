@@ -62,12 +62,12 @@ Record the upload wall time, the tag counters, and when `synced` stops rising.
 
 ## 4. Write the two tools
 
-**`tools/beeproxy`** — a reverse proxy in front of a Bee node (Go `net/http/httputil`, about 100 lines).
+**`tools/beeproxy`** — a reverse proxy in front of a Bee node (Go `net/http/httputil`).
 
-- Flags: `-listen` (default `127.0.0.1:1634`), `-bee` (upstream URL), `-lookahead N` (when set, adds `Swarm-Lookahead-Buffer-Size: N`; 0 turns lookahead off), `-nocache` (adds `Swarm-Cache: false`), `-log` (CSV path).
-- Passes `HEAD` and `GET` through unchanged apart from the injected headers. QEMU's probe needs `Accept-Ranges` on `HEAD`.
-- Logs one CSV row per request: start time (Unix ns), method, path, `Range` header, status, response bytes, duration (ms).
-- The log is both the latency record and the boot access trace, at QEMU's readahead granularity.
+- Flags: `-listen` (default `127.0.0.1:1636`; Bee's p2p port is 1634), `-bee` (upstream URL, default `$SWARMBLK_BEE_URL` or `http://localhost:1633`), `-lookahead N` (when set, adds `Swarm-Lookahead-Buffer-Size: N`; 0 turns lookahead off), `-nocache` (adds `Swarm-Cache: false`), `-log` (CSV path, appended to; default stdout).
+- Passes `HEAD` and `GET` through unchanged apart from the injected headers, and refuses other methods, so nothing can upload or buy stamps through it. QEMU's probe needs `Accept-Ranges` on `HEAD`.
+- Logs one CSV row per request under the header `start_ns,method,path,range,status,bytes,duration_ms`: start time (Unix ns), method, path, `Range` header, status, response bytes, duration (ms). Rows are written as requests finish, so sort by `start_ns` for the access order.
+- The log is both the latency record and the boot access trace, at QEMU's readahead granularity: each request covers the read plus `file.readahead`, so a 64 KiB read fetches 128 KiB.
 
 **`cmd/chunkprobe`** — measures raw chunk retrieval, which QEMU's 8-request limit hides.
 
@@ -79,7 +79,13 @@ Record the upload wall time, the tag counters, and when `synced` stops rising.
 
 ## 5. Boot runs
 
-Create a fresh overlay per run, pointing at the proxy:
+Start the proxy in a second terminal for each run, with that run's flags from the table below and a log of its own:
+
+```sh
+go run ./tools/beeproxy -bee http://<node B>:1633 -nocache -log cold-la-1.csv
+```
+
+Create a fresh overlay per run, pointing at the proxy (`http://127.0.0.1:1636`):
 
 ```sh
 mkoverlay () {   # $1 = overlay file, $2 = proxy URL
