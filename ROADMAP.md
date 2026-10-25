@@ -11,7 +11,7 @@ Boot an unmodified image from Swarm through QEMU's HTTP block driver and measure
 - [ ] Bee ≥ 2.8.2 on node A; a second node B (light) on another machine; immutable depth-22 test batch
 - [ ] 8 GiB raw Ubuntu cloud image and cloud-init seed
 - [ ] Upload at redundancy level 0; record reference, upload time and tag counters
-- [ ] `tools/beeproxy`: logging reverse proxy that can inject `Swarm-Lookahead-Buffer-Size` and `Swarm-Cache`
+- [x] `tools/beeproxy`: logging reverse proxy that can inject `Swarm-Lookahead-Buffer-Size` and `Swarm-Cache`
 - [ ] `cmd/chunkprobe`: intermediate walk plus random-leaf latency at several concurrency levels
 - [ ] Boot runs: cold with and without lookahead, warm, hot
 - [ ] Chunk probe on nodes A and B

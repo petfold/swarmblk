@@ -11,7 +11,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 
 ## Where we are
 
-**Phase 0: measure with stock tools.** The next code is `tools/beeproxy` and `cmd/chunkprobe` (specs in PHASE0.md §4). Phase 1, the offline checkpointer, follows. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
+**Phase 0: measure with stock tools.** `tools/beeproxy` is written; the next code is `cmd/chunkprobe` (spec in PHASE0.md §4). Phase 1, the offline checkpointer, follows. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
 
 ## Hard rules
 
@@ -64,7 +64,7 @@ internal/lineage/    lineage feed (registry in Phase 4)
 docs/                DESIGN, SPEC, PHASE0, results/
 ```
 
-## Commands (once the module exists)
+## Commands
 
 ```sh
 go build ./...
