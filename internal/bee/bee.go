@@ -35,9 +35,16 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %d %s: %s", e.Op, e.Status, http.StatusText(e.Status), e.Message)
 }
 
-// Is reports a 402 from a chunk upload as ErrOverissued.
+// Is reports a 402 from a chunk upload as ErrOverissued, and Bee's 404 for a
+// feed without updates as ErrNoUpdate.
 func (e *Error) Is(target error) bool {
-	return target == ErrOverissued && e.Status == http.StatusPaymentRequired
+	switch target {
+	case ErrOverissued:
+		return e.Status == http.StatusPaymentRequired
+	case ErrNoUpdate:
+		return e.Status == http.StatusNotFound && e.Message == "no update found"
+	}
+	return false
 }
 
 // Client sends requests to one Bee node.
@@ -103,6 +110,12 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 // a chunk that passes may lack trailing zeros that its span covers: read a
 // leaf as span bytes, padded with zeros.
 func (c *Client) Chunk(ctx context.Context, addr swarm.Address) (swarm.Chunk, error) {
+	return c.chunk(ctx, addr, swarm.ChunkWithSpanSize, cac.Valid)
+}
+
+// chunk fetches the chunk at addr, of at most size bytes, and checks it with
+// valid.
+func (c *Client) chunk(ctx context.Context, addr swarm.Address, size int, valid func(swarm.Chunk) bool) (swarm.Chunk, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/chunks/"+addr.String(), nil)
 	if err != nil {
 		return nil, err
@@ -115,13 +128,13 @@ func (c *Client) Chunk(ctx context.Context, addr swarm.Address) (swarm.Chunk, er
 		return nil, err
 	}
 	defer resp.Body.Close()
-	// One byte more than a chunk holds, so that a longer body fails the check.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, swarm.ChunkWithSpanSize+1))
+	// One byte more than the chunk may hold, so that a longer body fails the check.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(size)+1))
 	if err != nil {
 		return nil, fmt.Errorf("GET /chunks/%s: %w", addr, err)
 	}
 	ch := swarm.NewChunk(addr, data)
-	if !cac.Valid(ch) {
+	if !valid(ch) {
 		return nil, fmt.Errorf("GET /chunks/%s: %w", addr, ErrInvalidChunk)
 	}
 	return ch, nil
@@ -145,13 +158,18 @@ func (c *Client) PutChunk(ctx context.Context, batch string, tag uint64, ch swar
 	if err != nil {
 		return err
 	}
+	return stored(resp, "POST /chunks", ch.Address())
+}
+
+// stored checks that the response to an upload names the chunk want.
+func stored(resp *http.Response, op string, want swarm.Address) error {
 	defer resp.Body.Close()
 	var r struct{ Reference swarm.Address }
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return fmt.Errorf("POST /chunks: %w", err)
+		return fmt.Errorf("%s: %w", op, err)
 	}
-	if !r.Reference.Equal(ch.Address()) {
-		return fmt.Errorf("POST /chunks: Bee stored %s, want %s", r.Reference, ch.Address())
+	if !r.Reference.Equal(want) {
+		return fmt.Errorf("%s: Bee stored %s, want %s", op, r.Reference, want)
 	}
 	return nil
 }
