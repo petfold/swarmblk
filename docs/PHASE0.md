@@ -72,11 +72,11 @@ Record the upload wall time, the tag counters, and when `synced` stops rising.
 
 **`cmd/chunkprobe`** — measures raw chunk retrieval, which QEMU's 8-request limit hides.
 
-- Flags: `-bee`, `-ref`, `-n` (samples, default 2000), `-c` (concurrency list, default `1,8,32,128`), `-nocache`, `-seed`.
-- Walks all intermediate chunks from the root with `GET /chunks/{address}`, verifying each with Bee's `pkg/cac`. Reports the walk time.
-- Fetches `n` random leaves that are not Z_0 (SPEC §3) at each concurrency level.
-- Prints p50, p90, p99 and max latency, plus chunks per second, per level.
-- This code seeds `internal/bee` and `internal/tree` for Phase 1, so write it to the layout in CLAUDE.md.
+- Flags: `-bee` (default `$SWARMBLK_BEE_URL` or `http://localhost:1633`), `-ref` (the root from §3), `-n` (leaves per level, default 2000), `-c` (concurrency levels, default `1,8,32,128`), `-nocache` (adds `Swarm-Cache: false`), `-seed` (0 picks one; the report prints it).
+- Walks the tree one level at a time with `GET /chunks/{address}` at the highest concurrency, fetching each distinct intermediate chunk once and skipping zero subtrees (SPEC §3), as the engine will. Verifies every chunk with Bee's `pkg/cac`, and refuses trees that are not format 1, such as uploads without `Swarm-Redundancy-Level: 0`. Reports the walk time.
+- Fetches `n` random distinct leaves that are not Z_0 at each concurrency level, a fresh set per level while the image has enough.
+- Prints the §7 table: p50, p90, p99 and max latency, chunks per second, and failed fetches, per level.
+- Its tree and Bee code is in `internal/tree` and `internal/bee`, the seeds of Phase 1.
 
 ## 5. Boot runs
 
@@ -147,12 +147,12 @@ Upload: wall time; tag split / seen / synced; time until synced stopped rising.
 
 Chunk probe (node B, Swarm-Cache: false):
 
-| Concurrency | p50 (ms) | p90 | p99 | max | chunks/s |
-|---|---|---|---|---|---|
-| 1 | | | | | |
-| 8 | | | | | |
-| 32 | | | | | |
-| 128 | | | | | |
+| Concurrency | p50 (ms) | p90 | p99 | max | chunks/s | failed |
+|---|---|---|---|---|---|---|
+| 1 | | | | | | |
+| 8 | | | | | | |
+| 32 | | | | | | |
+| 128 | | | | | | |
 
 Intermediate walk time:
 Boot working set (unique 4 KiB blocks in the proxy log):
