@@ -157,7 +157,7 @@ Normative order. Steps 3–6 may run concurrently with the guest.
 3. **Upload** remaining leaves through `/chunks/stream` (or `POST /chunks`) with `Swarm-Postage-Batch-Id` of this host's current batch and one `Swarm-Tag`.
 4. **Rebuild** intermediate chunks bottom-up along affected paths; upload them, root last.
 5. **Upload** `meta.json`, `prefetch.bin` if any, and the manifest chunks.
-6. **Confirm** sync: poll `GET /tags/{uid}` until the tag reports every chunk pushed under it as synced. Pin down the exact counter arithmetic (`split`, `seen`, `stored`, `sent`, `synced`) for the pinned Bee version in a test before relying on it. Then fetch a random sample of new chunks with `Swarm-Cache: false` from the network.
+6. **Confirm** sync: poll `GET /tags/{uid}` until every chunk counted under the tag is synced, which is when `synced` = `split` − `seen`. Bee counts each uploaded chunk as split and each already-present one as seen. `internal/bee`'s integration test pins this rule for Bee 2.8.3; check it again before moving to another Bee version. Then fetch a random sample of new chunks with `Swarm-Cache: false` from the network.
 7. **Publish** lineage feed update *n*+1.
 8. **Retire** the epoch: move its blocks into the chunk store under their addresses and record coverage.
 

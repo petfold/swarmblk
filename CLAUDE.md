@@ -11,7 +11,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 
 ## Where we are
 
-**Phase 1: the offline checkpointer.** Phase 0 is done ([results](docs/results/phase0-2026-10-25.md)), and its gate was decided on 2026-10-25: go on. `internal/tree` has geometry, path arithmetic, zero subtrees, incremental rebuild and diff, and `internal/store` keeps verified chunks on disk; next are the rest of `internal/bee`, then `swarmblk import`. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
+**Phase 1: the offline checkpointer.** Phase 0 is done ([results](docs/results/phase0-2026-10-25.md)), and its gate was decided on 2026-10-25: go on. `internal/tree` has geometry, path arithmetic, zero subtrees, incremental rebuild and diff, `internal/store` keeps verified chunks on disk, and `internal/bee` uploads chunks (single or streamed), tracks sync by tag and reads batches and buckets. Next is `swarmblk import`; `/soc` and `/feeds` come with `internal/lineage`. Do not start the NBD engine (Phase 2) before Phase 1's gate passes.
 
 ## Hard rules
 
