@@ -48,6 +48,7 @@ func cmdServe(args []string) {
 	fs.StringVar(&cfg.prefetch, "prefetch", "", "prefetch from the boot trace in this `file` instead of the snapshot's")
 	fs.Int64Var(&cfg.window, "window", 16384, "prefetch at most this many `blocks` of the trace ahead of the guest")
 	nocache := fs.Bool("nocache", false, "ask Bee not to keep the chunks it retrieves (Swarm-Cache: false), so that measurements stay cold")
+	iolock := fs.Bool("iolock", false, "run as an I/O flusher with locked memory, for a host whose kernel mounts the disk; needs CAP_SYS_RESOURCE and CAP_IPC_LOCK")
 	fs.Parse(args)
 	if fs.NArg() > 1 || cfg.root != "" && (fs.NArg() == 1 || cfg.disk != "") || cfg.root == "" && cfg.disk == "" && fs.NArg() == 0 {
 		usage()
@@ -55,6 +56,11 @@ func cmdServe(args []string) {
 	var err error
 	if cfg.cache, err = parseSize(*cache); err != nil {
 		log.Fatal(err)
+	}
+	if *iolock {
+		if err := ioLock(); err != nil {
+			log.Fatal(err)
+		}
 	}
 	cfg.arg = fs.Arg(0)
 	cfg.disks = filepath.Join(*dir, "disks")

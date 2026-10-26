@@ -58,6 +58,10 @@ func main() {
 		cmdDiff(os.Args[2:])
 	case "serve":
 		cmdServe(os.Args[2:])
+	case "iolock":
+		if err := cmdIOLock(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
 	default:
 		usage()
 	}
@@ -72,6 +76,7 @@ func usage() {
   swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
   swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
   swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-batch id] [-every interval] [-qga socket] [-policy policy] ... -disk name [lineage|snapshot]
+  swarmblk iolock -- command [arguments]
 `)
 	os.Exit(2)
 }
