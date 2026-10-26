@@ -286,6 +286,8 @@ Decisions:
 | 2026-10-26 | swarmblk implements its own NBD server (`internal/nbd`) for the subset it needs | The Go libraries checked, pojntfx/go-nbd v0.3.2 and Merovius/nbd, lack structured replies, block status, trim and write-zeroes; an nbdkit plugin would need cgo and run the engine inside nbdkit | pojntfx/go-nbd, Merovius/nbd, an nbdkit Go plugin |
 | 2026-10-26 | Offline checkpoints read the overlay's clusters from the qcow2 file at `qemu-img map`'s offsets, then rebase the overlay onto the new snapshot | No NBD server or cgo, and the snapshot underneath is never read; the overlay always names its parent, so the next checkpoint follows it and an unpublished one resumes | Block reads through `qemu-nbd` or libnbd; a local table of overlays and lineages |
 | 2026-10-26 | Lineage updates carry Bee's legacy feed payload: a time and the manifest reference | Stock Bee resolves it through `GET /feeds` and `/bzz`; Swarm tools read it as a reference; fixed size | Wrapping the manifest's root chunk (Bee's newer payload) |
+| 2026-10-26 | Live checkpoints run inside `serve`, which holds the disk; `checkpoint -disk` asks on the disk's control socket | The cut needs the engine's write lock, and one process owning a disk's epochs never races the guest | A separate checkpointer reading the epoch files |
+| 2026-10-26 | At most one frozen epoch, which records its snapshot once uploaded | A stopped checkpoint resumes by publishing, not uploading again; reads look through at most two epochs | A queue of frozen epochs |
 
 ## 13. References
 

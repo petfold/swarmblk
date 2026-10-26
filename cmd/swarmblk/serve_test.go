@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 
@@ -232,7 +233,7 @@ func TestServeDisk(t *testing.T) {
 	}
 	run(t, "qemu-io", "-f", "raw", "-c", "write -P 0x61 0 64k", "-c", "write -P 0x62 1M 512", "-c", "write -z 2M 64k",
 		"-c", "discard 4M 8k", "-c", "write -f -P 0x63 63M 4k", "-c", "flush", uri)
-	if err, log := stop(); err != nil || !strings.Contains(log, "disk vm is new") || !strings.Contains(log, "writable, epoch 1 holding 0 blocks") {
+	if err, log := stop(); err != nil || !strings.Contains(log, "disk vm: new, on snapshot "+snap0.String()) || !strings.Contains(log, "writable, epoch 1 holding 0 blocks") {
 		t.Fatalf("serve ended with %v:\n%s", err, log)
 	}
 	want := bytes.Clone(img)
@@ -260,9 +261,11 @@ func TestServeDisk(t *testing.T) {
 		cfg  serveConfig
 		want string
 	}{
-		"another snapshot": {serveConfig{disk: "vm", arg: other.String(), disks: disks}, "is on snapshot"},
-		"a new disk alone": {serveConfig{disk: "fresh", disks: disks}, "is new"},
-		"a bad name":       {serveConfig{disk: "../vm", arg: snap0.String(), disks: disks}, "disk name"},
+		"another snapshot":      {serveConfig{disk: "vm", arg: other.String(), disks: disks}, "is on snapshot"},
+		"a new disk alone":      {serveConfig{disk: "fresh", disks: disks}, "is new"},
+		"a bad name":            {serveConfig{disk: "../vm", arg: snap0.String(), disks: disks}, "disk name"},
+		"checkpoints read-only": {serveConfig{arg: snap0.String(), every: time.Minute}, "-disk"},
+		"no batch":              {serveConfig{disk: "vm", disks: disks, every: time.Minute}, "batch"},
 	} {
 		c.cfg.sock = filepath.Join(t.TempDir(), "x.sock")
 		if err := serve(ctx, cp.c, newStore(t), c.cfg, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), c.want) {

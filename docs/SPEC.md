@@ -177,6 +177,16 @@ A crash before step 7 leaves the previous snapshot current; the uploaded chunks 
 
 The snapshot continues the parent's lineage when this host holds its key and the parent is its head; otherwise it starts a new lineage, which `-branch` also forces. A checkpoint that stops between the rebase and the publish leaves the overlay on an unpublished snapshot, and the next checkpoint publishes it first.
 
+**Live checkpoints (Phase 2).** A writable disk (§11) is checkpointed while its guest runs. `swarmblk serve -disk` holds the disk and runs its checkpoints, one at a time: every `-every`, when `swarmblk checkpoint -disk` asks on the disk's control socket, and at start when one stopped part way. With no serve holding the disk, `checkpoint -disk` opens it and runs the checkpoint itself.
+
+- Step 1 waits for the writes in flight, holds off new ones, fsyncs the active epoch, marks it `frozen` and puts a new epoch on top, on the same parent. Reads never wait. With `-qga`, the QEMU guest agent freezes the guest's filesystems (`guest-fsfreeze-freeze`) before the cut and thaws them after it, also after a failed freeze, which may have frozen some. The snapshot records `consistency: "application"` only when the freeze succeeded. The client syncs first: a 0xFF byte, then `guest-sync-delimited` with a random ID, ignoring everything before its answer.
+- Steps 2–6 take the frozen epoch's blocks as they were at the cut, patches applied to what lies under them, and rebuild and upload as offline checkpoints do.
+- Before step 7, the frozen epoch records `state: uploading` and the new `snapshot`. A checkpoint that stops after that only publishes the next time.
+- Step 8 moves the epochs above onto the new snapshot (their `parent` and `disk_root`), marks the frozen epoch `retired` and removes it, closing it when no read uses it any more.
+- At most one epoch is frozen: a checkpoint first finishes one that an earlier checkpoint left.
+
+The control socket is `disks/<name>/control.sock` (§10). A client sends `{"request":"checkpoint"}` as one JSON line and gets the checkpoint's log as `{"log":"…"}` lines, then `{"snapshot":"<hex>"}` or `{"error":"…"}`. A checkpoint with no writes since the last returns the disk's snapshot and uploads nothing.
+
 ## 9. Postage rules
 
 - **P1.** Buy batches with the `immutable: true` header. Never stamp disk data with a mutable batch.
@@ -194,18 +204,21 @@ Under `$SWARMBLK_HOME` (default `~/.local/share/swarmblk`), mode 0700:
 |---|---|
 | `chunks/` | content-addressed chunk store: tree cache (all intermediates of known snapshots) and chunk cache (leaves), verified on write |
 | `state.db` | embedded key-value store (e.g. bbolt): lineages (id, owner, topic, head index, head manifest), batches (id, bound host, depth, TTL forecast, fullest bucket), coverage (address → batch ids), epochs (Phase 2) |
-| `disks/` | writable disks, each a directory of write epochs (§11) |
+| `disks/` | writable disks, each a directory of write epochs (§11), a `lock` file that the process holding the disk keeps an exclusive `flock` on, and, while `serve` holds it, `control.sock` (§8) |
 | `keys/` | lineage keys, one file `<owner>.key` each, holding the private key in hex, mode 0600; never logged or committed. A key file that other users can read is refused |
 
 ## 11. Write epochs (Phase 2)
 
 A writable disk keeps the blocks written since its last snapshot in a write epoch, a directory `$SWARMBLK_HOME/disks/<name>/<n>` for epoch *n*:
 
-- `super.json`: `format` (`swarmblk-epoch/1`), `epoch`, `parent` (the snapshot's manifest), `disk_root`, `size`, and `state`: `active`, `frozen`, `uploading` or `retired`. It is replaced atomically.
+- `super.json`: `format` (`swarmblk-epoch/1`), `epoch`, `parent` (the snapshot's manifest), `disk_root`, `size`, `state`, and from `uploading` on, `snapshot`, the manifest of the snapshot that holds the epoch's blocks. It is written after `data` and `index` exist, and replaced atomically. A directory without it and with no records is what an interrupted create left; it is removed when the disk opens.
+- States: `active` takes the writes; `frozen` is cut for a checkpoint; `uploading` has its snapshot uploaded and synced, perhaps not yet published; `retired` is in a published snapshot that the epochs above sit on, and is removed.
 - `data`: the written bytes, appended.
 - `index`: 36-byte little-endian records, appended after their data: kind (1 byte: 1 a whole block, 2 a block of zeros with no data, 3 a patch), 3 zero bytes, `pos` (uint32, a patch's offset in the block), `length` (uint32: 4096, 0, or a patch's length), `block` (uint64), `offset` (uint64, where the data starts in `data`), the data's CRC32C (uint32), and the CRC32C of the 32 bytes before it (uint32).
 
 Reads take a block's latest whole record, or else its contents in the snapshot, and apply the patches after it in order. A write covering part of a block is recorded whole when the block's contents are at hand, and as a patch otherwise (§4); a whole block of zeros, a discard and a zero-write are zero blocks. A guest FLUSH, or a write with FUA, completes only after `data` and then `index` are fsynced, so a durable record never points at data that is not. Recovery replays the index and drops the first record whose checksum, data or position fails, and everything after it, then truncates both files. An open epoch holds an exclusive `flock` on its index, so no second process writes it.
+
+A disk is its epochs, oldest first, on the snapshot under the oldest: the newest is active and the others are frozen. When the disk opens, a `retired` epoch, and a frozen one whose `snapshot` is the parent of the epochs above it, are removed, since their checkpoint finished; the epochs left must share one parent (§8).
 
 ## 12. Disk card (draft, Phase 2)
 

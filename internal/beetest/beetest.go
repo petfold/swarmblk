@@ -8,6 +8,7 @@ package beetest
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,11 +40,12 @@ type Bee struct {
 
 	Store *inmemchunkstore.ChunkStore
 
-	mu        sync.Mutex
-	received  []swarm.Address
-	streams   int
-	hidden    map[string]bool
-	refuseSOC bool
+	mu           sync.Mutex
+	received     []swarm.Address
+	streams      int
+	hidden       map[string]bool
+	refuseSOC    bool
+	refuseChunks bool
 }
 
 // New returns a fake Bee with an immutable batch whose buckets hold 32
@@ -81,6 +83,13 @@ func (b *Bee) Hide(addr swarm.Address, hidden bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.hidden[addr.ByteString()] = hidden
+}
+
+// RefuseChunks makes chunk streams fail, or work again.
+func (b *Bee) RefuseChunks(refuse bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refuseChunks = refuse
 }
 
 // RefuseSOC makes uploads of single-owner chunks fail, or work again.
@@ -192,6 +201,11 @@ func (b *Bee) stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ch, err := cac.NewWithDataSpan(msg)
+		b.mu.Lock()
+		if b.refuseChunks {
+			err = errors.New("refused")
+		}
+		b.mu.Unlock()
 		if err == nil {
 			err = b.put(r.Context(), ch)
 		}

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethersphere/bee/v2/pkg/storage"
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 
 	"github.com/petfold/swarmblk/internal/bee"
@@ -30,7 +31,23 @@ func cmdCheckpoint(args []string) {
 	dir := fs.String("home", home(), "local state `directory` ($SWARMBLK_HOME if set)")
 	branch := fs.Bool("branch", false, "start a new lineage, even if this host holds the parent's")
 	prefetch := fs.String("prefetch", "", "store the boot trace in this `file` with the snapshot, rather than the parent's")
+	disk := fs.String("disk", "", "checkpoint the writable disk with this `name` instead: through the serve that runs it, or here if none does")
 	fs.Parse(args)
+	if *disk != "" {
+		if fs.NArg() != 0 {
+			usage()
+		}
+		s, err := store.Open(filepath.Join(*dir, "chunks"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		snap, err := checkpointNamedDisk(context.Background(), bee.New(*beeURL, 64), s, *dir, *disk, *batch, os.Stderr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(snap)
+		return
+	}
 	if fs.NArg() != 1 || *batch == "" {
 		usage()
 	}
@@ -59,15 +76,13 @@ func cmdCheckpoint(args []string) {
 const window = 16384
 
 // checkpoint turns the overlay at path into the next snapshot after the one
-// it sits on (SPEC §8), with the VM stopped. It rebuilds the parent's tree
-// with the overlay's blocks, writes a snapshot manifest, uploads every chunk
-// that differs from the parent's, the manifest's root last, and waits until
-// all are synced. It then points the overlay at the new snapshot, so that
-// the next checkpoint follows it, and publishes the snapshot as the next
-// update of the parent's lineage, or of a new one (SPEC §7). Lineage keys
-// live in keys. The snapshot gets the boot trace prefetch, if not nil, or
-// else keeps its parent's (SPEC §6). It reports progress to w and returns
-// the snapshot's reference, or the parent's if the overlay changes nothing.
+// it sits on (SPEC §8), with the VM stopped: commit rebuilds the parent's
+// tree with the overlay's blocks and uploads the snapshot, and before it is
+// published the overlay is pointed at it, so that the next checkpoint
+// follows it. Lineage keys live in keys. The snapshot gets the boot trace
+// prefetch, if not nil, or else keeps its parent's (SPEC §6). It reports
+// progress to w and returns the snapshot's reference, or the parent's if
+// the overlay changes nothing.
 func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch, path string, branch bool, prefetch []byte, w io.Writer) (swarm.Address, error) {
 	if err := checkBatch(ctx, c, batch); err != nil {
 		return swarm.ZeroAddress, err
@@ -84,10 +99,48 @@ func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch,
 	if parent.Meta.Size != o.Size {
 		return swarm.ZeroAddress, fmt.Errorf("%s is a %d-byte disk on a snapshot of %d bytes", path, o.Size, parent.Meta.Size)
 	}
+	return commit(ctx, c, s, get, keys, batch, commitSpec{
+		parent:   parent,
+		what:     "overlay",
+		blocks:   func(fn func(map[int64][]byte) error) (int64, error) { return o.blocks(ctx, window, fn) },
+		branch:   branch,
+		prefetch: prefetch,
+		// The overlay moves to the new snapshot before the update is
+		// published: if the publish fails, the next checkpoint finds the
+		// snapshot under the overlay and publishes it first.
+		uploaded: func(snap swarm.Address) error {
+			if err := o.rebase(ctx, snap); err != nil {
+				return fmt.Errorf("snapshot %s is uploaded but %s still sits on %s: %w", snap, path, parent.Ref, err)
+			}
+			return nil
+		},
+	}, w)
+}
 
+// commitSpec says what commit turns into a snapshot.
+type commitSpec struct {
+	parent      snapshot.Snapshot
+	what        string                                            // where the blocks come from, for reports
+	blocks      func(func(map[int64][]byte) error) (int64, error) // passes the changed blocks, nil for zeros, a window at a time
+	branch      bool                                              // start a new lineage
+	prefetch    []byte                                            // a boot trace, or nil to keep the parent's
+	consistency string                                            // "application" if the guest's filesystems were frozen
+	uploaded    func(swarm.Address) error                         // runs once the snapshot is synced, before it is published
+}
+
+// commit turns blocks that changed on spec.parent into the next snapshot
+// (SPEC §8, steps 2 to 7). It rebuilds the parent's tree with the blocks,
+// writes a snapshot manifest, uploads every chunk that differs from the
+// parent's, the manifest's root last, and waits until all are synced. Then
+// it runs spec.uploaded and publishes the snapshot as the next update of the
+// parent's lineage, or of a new one (SPEC §7). Chunks go to s, and get
+// supplies the parent's. It reports progress to w and returns the snapshot's
+// reference, or the parent's if the blocks change nothing.
+func commit(ctx context.Context, c *bee.Client, s *store.Store, get storage.Getter, keys, batch string, spec commitSpec, w io.Writer) (swarm.Address, error) {
+	parent := spec.parent
 	start := time.Now()
 	root := parent.Meta.DiskRoot
-	n, err := o.blocks(ctx, window, func(blocks map[int64][]byte) error {
+	n, err := spec.blocks(func(blocks map[int64][]byte) error {
 		r, chunks, err := tree.Rebuild(ctx, get, root, blocks)
 		if err != nil {
 			return err
@@ -103,9 +156,9 @@ func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch,
 	if err != nil {
 		return swarm.ZeroAddress, err
 	}
-	fmt.Fprintf(w, "overlay: %d blocks on snapshot %s, rebuilt in %v\n", n, parent.Ref, time.Since(start).Round(time.Millisecond))
+	fmt.Fprintf(w, "%s: %d blocks on snapshot %s, rebuilt in %v\n", spec.what, n, parent.Ref, time.Since(start).Round(time.Millisecond))
 
-	next, err := followLineage(ctx, c, keys, batch, parent, branch, w)
+	next, err := followLineage(ctx, c, keys, batch, parent, spec.branch, w)
 	if err != nil {
 		return swarm.ZeroAddress, err
 	}
@@ -132,10 +185,13 @@ func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch,
 	if err != nil {
 		return swarm.ZeroAddress, err
 	}
-	meta := snapshot.NewMeta(o.Size, root)
+	meta := snapshot.NewMeta(parent.Meta.Size, root)
 	meta.Parent = &parent.Ref
 	meta.Lineage = next.l.Meta(index)
 	meta.Encryption = parent.Meta.Encryption
+	if spec.consistency != "" {
+		meta.Consistency = spec.consistency
+	}
 	meta.Batches = []string{batch}
 	for _, b := range parent.Meta.Batches {
 		if !slices.Contains(meta.Batches, b) {
@@ -146,6 +202,7 @@ func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch,
 		meta.Stats.ChangedBlocks += r.Count
 	}
 	meta.Stats.NewChunks = int64(len(order))
+	prefetch := spec.prefetch
 	if prefetch == nil {
 		runs, err := snapshot.ReadTrace(ctx, get, parent)
 		if err != nil {
@@ -180,12 +237,10 @@ func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch,
 	if err := upload(ctx, c, s, batch, order, w); err != nil {
 		return swarm.ZeroAddress, err
 	}
-
-	// The overlay moves to the new snapshot before the update is published:
-	// if the publish fails, the next checkpoint finds the snapshot under the
-	// overlay and publishes it first.
-	if err := o.rebase(ctx, snap); err != nil {
-		return swarm.ZeroAddress, fmt.Errorf("snapshot %s is uploaded but %s still sits on %s: %w", snap, path, parent.Ref, err)
+	if spec.uploaded != nil {
+		if err := spec.uploaded(snap); err != nil {
+			return swarm.ZeroAddress, err
+		}
 	}
 	u := lineage.Update{Index: index, Snapshot: snap, Time: meta.Created}
 	if err := lineage.Publish(ctx, c, batch, next.l, next.key, next.prev, u); err != nil {
@@ -227,28 +282,40 @@ func followLineage(ctx context.Context, c *bee.Client, keys, batch string, paren
 	if err != nil {
 		return successor{}, err
 	}
-	self := lineage.Update{Index: i, Snapshot: parent.Ref, Time: parent.Meta.Created}
+	self, err := publishedAt(ctx, c, batch, l, key, i, parent, w)
+	if err != nil {
+		return successor{}, fmt.Errorf("%w; retry if Bee lags, or checkpoint with -branch to start a new lineage", err)
+	}
+	return successor{l, key, &self}, nil
+}
+
+// publishedAt makes sure that snapshot snap is update i of lineage l, the
+// lineage's head. If a checkpoint uploaded snap but stopped before
+// publishing it, snap's own parent is the head, and publishedAt publishes
+// snap, signed with key. It returns the update.
+func publishedAt(ctx context.Context, c *bee.Client, batch string, l lineage.Lineage, key *ecdsa.PrivateKey, i uint64, snap snapshot.Snapshot, w io.Writer) (lineage.Update, error) {
+	self := lineage.Update{Index: i, Snapshot: snap.Ref, Time: snap.Meta.Created}
 	head, err := lineage.Head(ctx, c, l)
 	none := errors.Is(err, bee.ErrNoUpdate)
 	switch {
 	case err != nil && !none:
-		return successor{}, err
-	case !none && head.Index == i && head.Snapshot.Equal(parent.Ref):
-		return successor{l, key, &head}, nil
-	case none && i == 0, !none && i > 0 && head.Index == i-1 && parent.Meta.Parent != nil && head.Snapshot.Equal(*parent.Meta.Parent):
+		return lineage.Update{}, err
+	case !none && head.Index == i && head.Snapshot.Equal(snap.Ref):
+		return head, nil
+	case none && i == 0, !none && i > 0 && head.Index == i-1 && snap.Meta.Parent != nil && head.Snapshot.Equal(*snap.Meta.Parent):
 		var prev *lineage.Update
 		if !none {
 			prev = &head
 		}
-		fmt.Fprintf(w, "lineage %s: publishing update %d, snapshot %s, which an earlier checkpoint left unpublished\n", l, i, parent.Ref)
+		fmt.Fprintf(w, "lineage %s: publishing update %d, snapshot %s, which an earlier checkpoint left unpublished\n", l, i, snap.Ref)
 		if err := lineage.Publish(ctx, c, batch, l, key, prev, self); err != nil {
-			return successor{}, err
+			return lineage.Update{}, err
 		}
-		return successor{l, key, &self}, nil
+		return self, nil
 	}
 	found := "no update"
 	if !none {
 		found = fmt.Sprintf("update %d (snapshot %s)", head.Index, head.Snapshot)
 	}
-	return successor{}, fmt.Errorf("lineage %s: %w: Bee finds %s, but the overlay sits on update %d (snapshot %s); retry if Bee lags, or checkpoint with -branch to start a new lineage", l, lineage.ErrNotHead, found, i, parent.Ref)
+	return lineage.Update{}, fmt.Errorf("lineage %s: %w: Bee finds %s, but snapshot %s is update %d", l, lineage.ErrNotHead, found, snap.Ref, i)
 }
