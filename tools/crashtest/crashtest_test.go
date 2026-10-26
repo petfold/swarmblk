@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,8 +102,9 @@ func TestVerifyFinds(t *testing.T) {
 			gone = f[2]
 		}
 	}
-	for name := range e.files {
+	for _, name := range slices.Sorted(maps.Keys(e.files)) {
 		kept = name
+		break
 	}
 	if kept == "" || gone == "" {
 		t.Fatal("the workload kept or deleted no file")
@@ -114,7 +116,7 @@ func TestVerifyFinds(t *testing.T) {
 			b[len(b)/2] ^= 1
 			os.WriteFile(filepath.Join(dir, kept), b, 0o644)
 		},
-		"a short file": func(dir string) { os.Truncate(filepath.Join(dir, kept), 4096) },
+		"a short file": func(dir string) { os.Truncate(filepath.Join(dir, kept), e.files[kept].size-1) },
 		"a lost file":  func(dir string) { os.Remove(filepath.Join(dir, kept)) },
 		"a deleted file back": func(dir string) {
 			os.WriteFile(filepath.Join(dir, gone), []byte("back"), 0o644)
