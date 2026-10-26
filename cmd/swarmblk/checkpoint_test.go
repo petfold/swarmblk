@@ -47,10 +47,15 @@ func run(t *testing.T, name string, args ...string) {
 	}
 }
 
-// backingName names snap's disk the way QEMU reads it from Bee, with HTTP
-// options. Tests never contact the host.
-func backingName(snap swarm.Address) string {
-	return `json:{"file.driver":"http","file.url":"http://bee.invalid/bzz/` + snap.String() + `/disk.raw","file.timeout":60}`
+// testBacking names snap's disk as restore does, on a host that tests never
+// contact.
+func testBacking(t *testing.T, snap swarm.Address) string {
+	t.Helper()
+	b, err := backingName("http://bee.invalid", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // testOverlay is a qcow2 overlay, and the disk that a VM sees through it.
@@ -63,7 +68,7 @@ type testOverlay struct {
 func newOverlay(t *testing.T, snap swarm.Address, disk []byte) *testOverlay {
 	t.Helper()
 	o := &testOverlay{path: filepath.Join(t.TempDir(), "overlay.qcow2"), disk: disk}
-	run(t, "qemu-img", "create", "-q", "-u", "-f", "qcow2", "-F", "raw", "-b", backingName(snap), o.path, fmt.Sprint(len(disk)))
+	run(t, "qemu-img", "create", "-q", "-u", "-f", "qcow2", "-F", "raw", "-b", testBacking(t, snap), o.path, fmt.Sprint(len(disk)))
 	return o
 }
 
@@ -175,7 +180,7 @@ func (cp *checkpointer) check(t *testing.T, o *testOverlay, snap, parent swarm.A
 		t.Fatal(err)
 	}
 	if !ov.Snapshot.Equal(snap) || !strings.Contains(ov.Backing, `"file.timeout":60`) {
-		t.Errorf("the overlay's backing file is %s, want %s with the options kept", ov.Backing, backingName(snap))
+		t.Errorf("the overlay's backing file is %s, want %s with the options kept", ov.Backing, testBacking(t, snap))
 	}
 	l, i, err := lineage.FromMeta(*m.Lineage)
 	if err != nil {
@@ -329,8 +334,8 @@ func TestCheckpointRefuses(t *testing.T) {
 		"raw image":       {raw, "not a qcow2"},
 		"no backing":      {overlay("plain.qcow2", "", "64M"), "no raw backing"},
 		"a disk root":     {overlay("bytes.qcow2", "http://bee.invalid/bytes/"+snap0.String(), "64M"), "does not name one snapshot"},
-		"another size":    {overlay("large.qcow2", backingName(snap0), "128M"), "134217728-byte disk"},
-		"unknown":         {overlay("unknown.qcow2", backingName(swarm.MustParseHexAddress(strings.Repeat("ab", 32))), "64M"), "not found"},
+		"another size":    {overlay("large.qcow2", testBacking(t, snap0), "128M"), "134217728-byte disk"},
+		"unknown":         {overlay("unknown.qcow2", testBacking(t, swarm.MustParseHexAddress(strings.Repeat("ab", 32))), "64M"), "not found"},
 		"a missing image": {filepath.Join(dir, "missing.qcow2"), "missing.qcow2"},
 	} {
 		n := len(cp.bee.Received())

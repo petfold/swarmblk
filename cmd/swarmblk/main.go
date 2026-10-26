@@ -3,12 +3,17 @@
 //
 //	swarmblk import [-bee url] [-batch id] [-home dir] image.raw
 //	swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] overlay.qcow2
+//	swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
+//	swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
 //
 // import uploads a raw disk image as a format-1 tree (SPEC §2) in a first
-// snapshot, and prints the snapshot's reference. checkpoint turns a stopped
-// VM's qcow2 overlay into the next snapshot after the one it sits on,
-// publishes it in a lineage feed (SPEC §7), and prints its reference. The
-// defaults come from $SWARMBLK_BEE_URL, $SWARMBLK_BATCH and $SWARMBLK_HOME.
+// snapshot. checkpoint turns a stopped VM's qcow2 overlay into the next
+// snapshot after the one it sits on, and publishes it in a lineage feed
+// (SPEC §7). restore makes a new overlay on a snapshot, which QEMU reads
+// from Bee, and export writes a snapshot's disk to a raw image. A lineage is
+// given as 0x<owner>/<topic> and stands for its latest snapshot. Each
+// command prints the snapshot's reference. The defaults come from
+// $SWARMBLK_BEE_URL, $SWARMBLK_BATCH and $SWARMBLK_HOME.
 package main
 
 import (
@@ -29,6 +34,10 @@ func main() {
 		cmdImport(os.Args[2:])
 	case "checkpoint":
 		cmdCheckpoint(os.Args[2:])
+	case "restore":
+		cmdRestore(os.Args[2:])
+	case "export":
+		cmdExport(os.Args[2:])
 	default:
 		usage()
 	}
@@ -38,6 +47,8 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   swarmblk import [-bee url] [-batch id] [-home dir] image.raw
   swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] overlay.qcow2
+  swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
+  swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
 `)
 	os.Exit(2)
 }

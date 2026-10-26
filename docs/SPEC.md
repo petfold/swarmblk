@@ -138,6 +138,7 @@ Feed updates are built with Bee's `pkg/feeds` and `pkg/soc` and published with `
 - Update *n* carries the reference of snapshot *n*'s manifest. Index 0 is the lineage's first snapshot.
 - Payload, the content of the chunk that the update wraps: 40 bytes, the snapshot's `created` time as an 8-byte big-endian count of Unix seconds, then the 32-byte manifest reference. This is Bee's legacy feed payload, so `GET /feeds` and `/bzz` resolve it to the manifest. A retried publish signs the same bytes.
 - A writer publishes index *n*+1 only after reading its own head as *n*. If it reads *n*+1 naming the same manifest, an earlier attempt succeeded.
+- Commands name a lineage as `0x<owner>/<topic>`, in lowercase hex, and take it to mean its head.
 - Readers take the head's index from `GET /feeds`, then fetch the update with `GET /chunks/{address}` and check its signature themselves.
 
 **Disk registry (draft, Phase 4).**
@@ -168,7 +169,7 @@ Normative order. Steps 3–6 may run concurrently with the guest.
 
 A crash before step 7 leaves the previous snapshot current; the uploaded chunks are orphaned but harmless.
 
-**Offline checkpoints (Phase 1).** The disk is a qcow2 overlay whose backing file names its parent snapshot as `…/bzz/<snapshot>/disk.raw`, which QEMU reads from Bee over HTTP, as a plain URL or in a `json:` file name with QEMU's HTTP options. With the VM stopped, `swarmblk checkpoint`:
+**Offline checkpoints (Phase 1).** The disk is a qcow2 overlay whose backing file names its parent snapshot as `…/bzz/<snapshot>/disk.raw`, which QEMU reads from Bee over HTTP, as a plain URL or in a `json:` file name with QEMU's HTTP options. `swarmblk restore` makes such an overlay, with a `json:` name that sets Phase 0's options (`file.timeout` 60 s, `file.readahead` 64 KiB). With the VM stopped, `swarmblk checkpoint`:
 
 - reads the blocks the overlay itself holds from the qcow2 file, at the offsets that `qemu-img map` reports with the backing file left out; zero clusters become Z_0;
 - rebuilds the parent's tree with them and uploads the chunks that differ from the parent's at their place (steps 2–6);

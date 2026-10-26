@@ -106,8 +106,9 @@ func TestLiveImportMatchesBytes(t *testing.T) {
 // through QEMU, which reads the snapshot from Bee as its backing file, and
 // checkpoints the overlay twice. Each time Bee must serve the new snapshot's
 // disk.raw with the same bytes as the VM's disk (SPEC §14, I7, on one host),
-// and the lineage's head must move to it. The lineage key is a new one in a
-// temporary directory.
+// and the lineage's head must move to it. Then the lineage is exported and
+// restored with an empty store, and both must read as the VM's disk. The
+// lineage key is a new one in a temporary directory.
 func TestLiveCheckpoint(t *testing.T) {
 	needQEMU(t)
 	batch := os.Getenv("SWARMBLK_BATCH")
@@ -139,6 +140,8 @@ func TestLiveCheckpoint(t *testing.T) {
 		}
 		return [32]byte(h.Sum(nil))
 	}
+	var want [32]byte
+	var l lineage.Lineage
 	for round, cmds := range [][]string{
 		{"write -P 0xab 4096 4096", "write -z 1M 64k", "write -P 0x5a 63M 1M"},
 		{"write -P 0x77 8M 4k"},
@@ -154,7 +157,7 @@ func TestLiveCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := sum(f)
+		want = sum(f)
 		f.Close()
 
 		progress.Reset()
@@ -179,13 +182,46 @@ func TestLiveCheckpoint(t *testing.T) {
 			t.Errorf("round %d: Bee serves /bzz/%s/disk.raw (%s) with other bytes than the VM's disk", round, next, resp.Status)
 		}
 		resp.Body.Close()
-		l, _, err := lineage.FromMeta(*got.Meta.Lineage)
-		if err != nil {
+		if l, _, err = lineage.FromMeta(*got.Meta.Lineage); err != nil {
 			t.Fatal(err)
 		}
 		if head, err := lineage.Head(ctx, c, l); err != nil || head.Index != uint64(round) || !head.Snapshot.Equal(next) {
 			t.Errorf("round %d: lineage head %+v, %v; want snapshot %s", round, head, err, next)
 		}
 		snap = next
+	}
+
+	// The lineage restores with nothing cached: exported, and as a new
+	// overlay that QEMU reads from Bee.
+	fresh, err := store.Open(filepath.Join(t.TempDir(), "chunks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := filepath.Join(t.TempDir(), "export.raw")
+	progress.Reset()
+	if got, err := export(ctx, c, fresh, l.String(), raw, &progress); err != nil || !got.Equal(snap) {
+		t.Fatalf("export of lineage %s: %s, %v; want %s", l, got, err, snap)
+	}
+	t.Log("\n" + progress.String())
+	f, err := os.Open(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum(f) != want {
+		t.Error("the exported image differs from the VM's disk")
+	}
+	f.Close()
+	restored := filepath.Join(t.TempDir(), "restored.qcow2")
+	if got, err := restore(ctx, c, fresh, url, l.String(), restored, &progress); err != nil || !got.Equal(snap) {
+		t.Fatalf("restore of lineage %s: %s, %v; want %s", l, got, err, snap)
+	}
+	converted := filepath.Join(t.TempDir(), "restored.raw")
+	run(t, "qemu-img", "convert", "-f", "qcow2", "-O", "raw", restored, converted)
+	if f, err = os.Open(converted); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if sum(f) != want {
+		t.Error("QEMU reads the restored overlay different from the VM's disk")
 	}
 }
