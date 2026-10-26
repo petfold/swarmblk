@@ -137,6 +137,11 @@ type commitSpec struct {
 // supplies the parent's. It reports progress to w and returns the snapshot's
 // reference, or the parent's if the blocks change nothing.
 func commit(ctx context.Context, c *bee.Client, s *store.Store, get storage.Getter, keys, batch string, spec commitSpec, w io.Writer) (swarm.Address, error) {
+	release, err := s.Hold() // the new chunks exist only in s until synced
+	if err != nil {
+		return swarm.ZeroAddress, err
+	}
+	defer release()
 	parent := spec.parent
 	start := time.Now()
 	root := parent.Meta.DiskRoot

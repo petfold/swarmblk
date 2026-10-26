@@ -85,11 +85,11 @@ The engine's read rules:
 - **Share one chunk cache.** A local store keyed by Swarm address serves all snapshots and lineages. Chunks uploaded at a checkpoint go straight into it, so a host never re-fetches its own writes.
 - **Prefetch from a boot trace.** Record which blocks a boot reads, in order, and store the list in the snapshot manifest; on the next cold boot, fetch it in parallel ahead of the guest. Containers show why this works: Slacker found that pulling images took 76% of start time, yet only 6.4% of the pulled data was read.
 - **Hydrate by policy, not by default.** Each disk chooses one of three:
-  - *lazy:* demand reads and trace prefetch only, with a bounded chunk cache.
-  - *hydrate:* copy the whole snapshot locally in the background, fetching what the guest touches first, as dm-clone, Proxmox live restore and EBS volume restore do.
+  - *lazy:* demand reads and trace prefetch only, with a bounded chunk cache. The cache drops the leaves used least recently and keeps the tree, so a cold read still costs one fetch.
+  - *hydrate:* copy the whole snapshot locally in the background, fetching what the guest touches first, as dm-clone, Proxmox live restore and EBS volume restore do. The copy is a sparse image file beside the disk's epochs, outside the cache. A checkpoint moves it on with the blocks it uploaded, so it is never fetched again, and a complete copy runs the disk with no network at all.
   - *re-stamp only:* fetch each live chunk once to stamp it under the host's own batch, then discard it (§5).
 
-  Lazy suits golden images, CI and forensics, where most blocks are never read. Hydrate suits disaster-recovery restores that must outlive a network outage or an expired batch.
+  Lazy suits golden images, CI and forensics, where most blocks are never read. Hydrate suits disaster-recovery restores that must outlive a network outage or an expired batch: a CirrOS disk hydrated through node A then booted with no Bee running at all, and its checkpoints caught up when Bee came back.
 - **Fail visibly.** When retries run out, the engine either blocks the guest or returns an I/O error. ext4 remounts read-only on the first error, so the default is to block and raise an alarm.
 
 Erasure coding protects availability, not random-read latency: at the medium level, rebuilding one missing 4 KiB block takes 119 other chunks of its group. It pays off in sequential reads and hydration, where the whole group is read anyway.
@@ -288,6 +288,8 @@ Decisions:
 | 2026-10-26 | Lineage updates carry Bee's legacy feed payload: a time and the manifest reference | Stock Bee resolves it through `GET /feeds` and `/bzz`; Swarm tools read it as a reference; fixed size | Wrapping the manifest's root chunk (Bee's newer payload) |
 | 2026-10-26 | Live checkpoints run inside `serve`, which holds the disk; `checkpoint -disk` asks on the disk's control socket | The cut needs the engine's write lock, and one process owning a disk's epochs never races the guest | A separate checkpointer reading the epoch files |
 | 2026-10-26 | At most one frozen epoch, which records its snapshot once uploaded | A stopped checkpoint resumes by publishing, not uploading again; reads look through at most two epochs | A queue of frozen epochs |
+| 2026-10-26 | A hydrating disk keeps a sparse image file and a block map, which checkpoints move on with their blocks | A full copy must outlive the cache's bound and the network; pinning its chunks in the shared store would mean tracking millions of addresses | Pinned chunks in the chunk store |
+| 2026-10-26 | The chunk cache is bounded, 4 GiB by default, by removing the leaves used least recently; writers hold it until their uploads sync | Leaves can always be fetched again, while the tree makes every cold read one fetch, and unsynced chunks exist nowhere else | An unbounded cache; evicting tree chunks too |
 
 ## 13. References
 

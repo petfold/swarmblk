@@ -235,7 +235,7 @@ func TestDiskCheckpointResume(t *testing.T) {
 	top.Close()
 	os.Mkdir(filepath.Join(dir, "3"), 0o700) // as a crash in epoch.Create leaves it
 	open := func() (*diskState, error) {
-		return openDisk(ctx, cp.c, cp.s, cp.s.Through(cp.c.Chunk), filepath.Join(h.home, "disks"), "moved", "", &bytes.Buffer{})
+		return openDisk(ctx, cp.c, cp.s, cp.s.Through(cp.c.Chunk), filepath.Join(h.home, "disks"), "moved", "", "", &bytes.Buffer{})
 	}
 	ds, err := open()
 	if err != nil {

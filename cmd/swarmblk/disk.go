@@ -38,13 +38,21 @@ type diskState struct {
 	lock      *os.File          // the disk's lock, held while it is open
 	base      snapshot.Snapshot // under the oldest epoch
 	disk      *engine.Disk
+	policy    string        // lazy, hydrate or restamp
+	img       *engine.Image // the local copy of a hydrating disk
+	moved     chan struct{} // told when a checkpoint moves the disk to its next snapshot
 
 	mu sync.Mutex // one checkpoint at a time
 }
 
-// close closes the disk's epochs and releases it.
+// close closes the disk's epochs and its local copy, and releases it.
 func (ds *diskState) close() error {
 	err := ds.disk.Close()
+	if ds.img != nil {
+		if cerr := ds.img.Close(); err == nil {
+			err = cerr
+		}
+	}
 	ds.lock.Close()
 	return err
 }
@@ -71,9 +79,10 @@ func lockDisk(name, dir string) (*os.File, error) {
 // frozen epoch that a finished checkpoint replaced, a retired one and what
 // an unfinished epoch.Create left are removed. A disk that does not exist
 // yet gets a first epoch on the snapshot or lineage arg, and for one that
-// does, arg must name the snapshot it is on, if anything. s keeps the
-// chunks, which get reads from through Bee.
-func openDisk(ctx context.Context, c *bee.Client, s *store.Store, get storage.Getter, disks, name, arg string, w io.Writer) (_ *diskState, err error) {
+// does, arg must name the snapshot it is on, if anything. The disk takes
+// policy, if not empty, as its hydration policy, and a hydrating disk gets
+// its local copy. s keeps the chunks, which get reads from through Bee.
+func openDisk(ctx context.Context, c *bee.Client, s *store.Store, get storage.Getter, disks, name, arg, policy string, w io.Writer) (_ *diskState, err error) {
 	if !diskName.MatchString(name) {
 		return nil, fmt.Errorf("disk name %q: use letters, digits, dots, dashes and underscores", name)
 	}
@@ -180,12 +189,26 @@ func openDisk(ctx context.Context, c *bee.Client, s *store.Store, get storage.Ge
 		return nil, err
 	}
 	snap.SetLocal(s)
-	d, err := engine.NewDisk(snap, eps...)
-	if err != nil {
+	if policy, err = diskPolicy(dir, name, policy, w); err != nil {
 		closeAll()
 		return nil, err
 	}
-	return &diskState{name: name, dir: dir, lock: lock, base: base, disk: d}, nil
+	var img *engine.Image
+	if policy == policyHydrate {
+		if img, err = openImage(ctx, get, dir, base, eps, snap); err != nil {
+			closeAll()
+			return nil, err
+		}
+	}
+	d, err := engine.NewDisk(snap, eps...)
+	if err != nil {
+		if img != nil {
+			img.Close()
+		}
+		closeAll()
+		return nil, err
+	}
+	return &diskState{name: name, dir: dir, lock: lock, base: base, disk: d, policy: policy, img: img, moved: make(chan struct{}, 1)}, nil
 }
 
 // checkpointDisk turns everything written to the disk so far into the next
@@ -296,7 +319,7 @@ func (ds *diskState) finish(ctx context.Context, c *bee.Client, s *store.Store, 
 			return swarm.ZeroAddress, err
 		}
 	}
-	if err := ds.promote(ctx, get, s, ep, snap); err != nil {
+	if err := ds.promote(ctx, get, s, ep, snap, batch); err != nil {
 		return swarm.ZeroAddress, fmt.Errorf("snapshot %s is published, but disk %s still sits on %s: %w", snap, ds.name, ds.base.Ref, err)
 	}
 	return snap, nil
@@ -331,7 +354,7 @@ func checkpointNamedDisk(ctx context.Context, c *bee.Client, s *store.Store, hom
 		}
 	}
 	get := s.Through(retry(c.Chunk))
-	ds, err := openDisk(ctx, c, s, get, filepath.Join(home, "disks"), name, "", w)
+	ds, err := openDisk(ctx, c, s, get, filepath.Join(home, "disks"), name, "", "", w)
 	if err != nil {
 		return swarm.ZeroAddress, err
 	}
@@ -343,10 +366,11 @@ func checkpointNamedDisk(ctx context.Context, c *bee.Client, s *store.Store, hom
 }
 
 // promote puts the disk on snap, the published snapshot of the frozen epoch
-// ep (SPEC §8, step 8). The epochs above ep move onto snap first; then ep
+// ep, which batch stamped (SPEC §8, step 8). A local copy moves to snap
+// first, with ep's blocks. Then the epochs above ep move onto snap, and ep
 // is retired, leaves the disk and is removed. A stop between the two leaves
 // ep replaced, and openDisk removes it.
-func (ds *diskState) promote(ctx context.Context, get storage.Getter, s *store.Store, ep *epoch.Epoch, snap swarm.Address) error {
+func (ds *diskState) promote(ctx context.Context, get storage.Getter, s *store.Store, ep *epoch.Epoch, snap swarm.Address, batch string) error {
 	base := ds.base
 	esnap := ds.disk.Snapshot()
 	if !snap.Equal(base.Ref) {
@@ -358,6 +382,24 @@ func (ds *diskState) promote(ctx context.Context, get storage.Getter, s *store.S
 			return err
 		}
 		esnap.SetLocal(s)
+		if ds.img != nil {
+			old := ds.disk.Snapshot()
+			old.SetImage(ds.img, base.Meta.DiskRoot) // still readable while the copy moves on
+			err := ds.img.Advance(old.Root(), base.Meta.DiskRoot, func(put func(int64, []byte) error) error {
+				return ds.disk.Blocks(ctx, ep, window, func(blocks map[int64][]byte) error {
+					for b, data := range blocks {
+						if err := put(b, data); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+			})
+			if err != nil {
+				return fmt.Errorf("moving the local copy: %w", err)
+			}
+			esnap.SetImage(ds.img, swarm.ZeroAddress)
+		}
 	}
 	for _, above := range append(ds.disk.Frozen()[1:], ds.disk.Active()) {
 		if err := above.Update(func(s *epoch.Super) {
@@ -373,6 +415,17 @@ func (ds *diskState) promote(ctx context.Context, get storage.Getter, s *store.S
 	if err := ds.disk.Promote(esnap, ep); err != nil {
 		return err
 	}
+	if r, ok := ds.readRestamp(); ok && r.Snapshot.Equal(ds.base.Ref) {
+		if !slices.Contains(r.Batches, batch) {
+			r.Batches = append(r.Batches, batch)
+		}
+		r.Snapshot = base.Ref
+		ds.writeRestamp(r) // without it, the next run re-stamps again
+	}
 	ds.base = base
+	select {
+	case ds.moved <- struct{}{}:
+	default:
+	}
 	return os.RemoveAll(ep.Dir())
 }

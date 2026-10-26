@@ -202,9 +202,9 @@ Under `$SWARMBLK_HOME` (default `~/.local/share/swarmblk`), mode 0700:
 
 | Item | Content |
 |---|---|
-| `chunks/` | content-addressed chunk store: tree cache (all intermediates of known snapshots) and chunk cache (leaves), verified on write |
+| `chunks/` | content-addressed chunk store: tree cache (all intermediates of known snapshots) and chunk cache (leaves), verified on write. `serve -cache` bounds it, 4 GiB by default: a sweep removes the leaves used least recently, read or written, and never intermediate chunks or manifests. A writer holds `chunks/.lock` shared from putting chunks until Bee has synced them; a sweep takes it alone, or skips |
 | `state.db` | embedded key-value store (e.g. bbolt): lineages (id, owner, topic, head index, head manifest), batches (id, bound host, depth, TTL forecast, fullest bucket), coverage (address → batch ids), epochs (Phase 2) |
-| `disks/` | writable disks, each a directory of write epochs (§11), a `lock` file that the process holding the disk keeps an exclusive `flock` on, and, while `serve` holds it, `control.sock` (§8) |
+| `disks/` | writable disks, each a directory of write epochs (§11), a `lock` file that the process holding the disk keeps an exclusive `flock` on, and, while `serve` holds it, `control.sock` (§8). Also its hydration policy and what that keeps (§11): `policy`, `image/` and `restamp.json` |
 | `keys/` | lineage keys, one file `<owner>.key` each, holding the private key in hex, mode 0600; never logged or committed. A key file that other users can read is refused |
 
 ## 11. Write epochs (Phase 2)
@@ -219,6 +219,16 @@ A writable disk keeps the blocks written since its last snapshot in a write epoc
 Reads take a block's latest whole record, or else its contents in the snapshot, and apply the patches after it in order. A write covering part of a block is recorded whole when the block's contents are at hand, and as a patch otherwise (§4); a whole block of zeros, a discard and a zero-write are zero blocks. A guest FLUSH, or a write with FUA, completes only after `data` and then `index` are fsynced, so a durable record never points at data that is not. Recovery replays the index and drops the first record whose checksum, data or position fails, and everything after it, then truncates both files. An open epoch holds an exclusive `flock` on its index, so no second process writes it.
 
 A disk is its epochs, oldest first, on the snapshot under the oldest: the newest is active and the others are frozen. When the disk opens, a `retired` epoch, and a frozen one whose `snapshot` is the parent of the epochs above it, are removed, since their checkpoint finished; the epochs left must share one parent (§8).
+
+**Hydration policy** (DESIGN §3). A disk's `policy` file holds `lazy`, `hydrate` or `restamp`, and a disk without one is lazy. A lazy disk reads through the bounded chunk cache (§10). A hydrating disk keeps a local copy in `image/`:
+
+- `disk.raw`: the disk under the epochs, a sparse file of its size. Zero blocks are holes, and block status is answered from them.
+- `present`: a bitmap, bit *b* mod 8 of byte *b*/8 set when block *b* is in `disk.raw`. Data is fsynced before its bits are written.
+- `root`: the root of the disk tree the copy holds, in hex, replaced atomically.
+
+Reads take a block from the copy first and put what they fetch in it, and a background hydration fetches the rest in disk order. A checkpoint moves the copy at the start of step 8: it writes the frozen epoch's blocks, syncs, then replaces `root`, before the epochs above move. Meanwhile reads may use the copy, since the frozen epoch above holds every block that changes. When the disk opens, a copy whose root is neither that of the disk's snapshot nor that of a frozen epoch's recorded `snapshot` starts again empty. A disk that is no longer hydrating loses its copy.
+
+A re-stamping disk uploads every distinct chunk of its snapshot again under the batch, as one stream, once. It then records `restamp.json`, `{"snapshot": …, "batches": […]}`: every chunk of that snapshot carries a stamp from one of the batches. A checkpoint moves the record to the new snapshot and adds its batch.
 
 ## 12. Disk card (draft, Phase 2)
 

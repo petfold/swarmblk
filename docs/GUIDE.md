@@ -191,7 +191,7 @@ swarmblk serve -disk vm1 $SNAP
 
 ```
 disk vm1: new, on snapshot 9c7a4d0b…
-serve: a 128 MiB disk, writable, epoch 1 holding 0 blocks, on snapshot 9c7a4d0b…, as vm1
+serve: a 128 MiB disk, writable, epoch 1 holding 0 blocks, on snapshot 9c7a4d0b…, policy lazy, as vm1
 nbd+unix:///vm1?socket=/home/you/.local/share/swarmblk/nbd.sock
 ```
 
@@ -302,6 +302,20 @@ On a second computer, set up Bee and swarmblk as in section 2. Reading needs no 
   swarmblk serve -disk vm1 $LINEAGE
   ```
   Its first checkpoint starts a new lineage, because the original lineage's key stays on the first computer. You now have two independent **branches** of the disk.
+
+**Keep a whole copy.** A disk normally fetches only the blocks its machine reads. For disaster recovery you may want all of it on the computer, so that it keeps working when the network does not. Give the disk the `hydrate` policy:
+
+```sh
+swarmblk serve -disk vm1 -policy hydrate $LINEAGE
+```
+
+`serve` then copies the whole disk in the background while the machine runs, fetching what the machine reads first:
+
+```
+disk vm1: hydrated, all 32768 blocks local; … fetched in …
+```
+
+From then on the disk starts and runs even with Bee unreachable; only checkpoints need Bee. Checkpoints keep the copy up to date, so nothing is fetched twice. The disk remembers its policy, and `-policy lazy` deletes the copy.
 
 Bee finds a lineage's latest update by asking the network. Right after a checkpoint it may still find the one before for a minute or so, as in the export above, which ran just after update 2 was published. A snapshot's reference never changes, so use it when you need that exact snapshot.
 
@@ -425,8 +439,8 @@ All its local state is in `~/.local/share/swarmblk`, or wherever `SWARMBLK_HOME`
 
 | Path | Holds |
 |---|---|
-| `chunks/` | a cache of every chunk swarmblk has handled, checked against its address; safe to delete while nothing runs |
-| `disks/<name>/` | a writable disk's writes since its last snapshot; deleting it loses them |
+| `chunks/` | a cache of the chunks swarmblk has handled, checked against their addresses; `serve` keeps it under 4 GiB, or the size `-cache` gives; safe to delete while nothing runs |
+| `disks/<name>/` | a writable disk's writes since its last snapshot, and its local copy if it has one; deleting it loses the writes |
 | `keys/` | your lineage keys; back it up |
 | `nbd.sock` | where `serve` listens unless told otherwise |
 

@@ -81,8 +81,10 @@ The export is named after the snapshot's reference, the root, or the disk's name
 | `-prefetch file` | the snapshot's trace | prefetch from the boot trace in this file |
 | `-window blocks` | 16384 | prefetch at most this many blocks of the trace ahead of the guest |
 | `-nocache` | off | ask Bee not to cache what it retrieves (`Swarm-Cache: false`), so that measurements stay cold |
+| `-cache size` | `4G` | bound the local chunk cache: at start and every 5 minutes, remove the leaves used least recently; `0` for no bound. Sizes take `K`, `M`, `G` or `T` |
+| `-policy policy` | the disk's own, else `lazy` | the disk's [hydration policy](#hydration-policies): `lazy`, `hydrate` or `restamp`; it is recorded with the disk |
 
-`-every` and `-qga` need `-disk`, and `-every` needs a batch. serve refuses a socket that another server listens on, and replaces one that nobody does.
+`-every`, `-qga` and `-policy` need `-disk`, and `-every` needs a batch. serve refuses a socket that another server listens on, and replaces one that nobody does.
 
 **The NBD export.** Fixed-newstyle handshake, structured replies, and block status through the `base:allocation` context, with zero blocks reported as holes. Block sizes: 512 bytes minimum, 4096 preferred, 32 MiB the largest request. Flush and FUA are supported. A writable export also takes trim and write-zeroes; a read-only one refuses writes.
 
@@ -97,7 +99,8 @@ Its messages, from several runs:
 ```
 disk vm1: new, on snapshot 9c7a4d0b…
 serve: prefetching 5926 blocks of the boot trace, up to 16384 ahead of the guest
-serve: a 128 MiB disk, writable, epoch 1 holding 0 blocks, on snapshot 9c7a4d0b…, as vm1
+serve: a 128 MiB disk, writable, epoch 1 holding 0 blocks, on snapshot 9c7a4d0b…, policy lazy, as vm1
+serve: chunk cache: removed 11298 leaves (44 MiB) used least recently; 3 MiB left
 serve: stopped after 12m49s; 0 chunks fetched from Bee
 serve: prefetched 5926 of 5926 trace blocks, 0 failed
 serve: wrote a boot trace of 5926 blocks in 120 runs to boot.trace
@@ -213,6 +216,32 @@ and receives the checkpoint's progress as `{"log":"…"}` lines, then `{"snapsho
 
 The guest must run `qemu-guest-agent`. Before each command, swarmblk sends a 0xFF byte and `guest-sync-delimited` with a random ID, and ignores everything before the matching answer. It then sends `guest-fsfreeze-freeze` before the cut and `guest-fsfreeze-thaw` after it, with a minute's timeout each.
 
+## Hydration policies
+
+Each writable disk has one, recorded in `disks/<name>/policy` and set with `serve -disk … -policy` ([DESIGN §3](DESIGN.md#3-read-path), [SPEC §11](SPEC.md#11-write-epochs-phase-2)):
+
+| Policy | The disk | Suits |
+|---|---|---|
+| `lazy` | reads what the guest asks for, and its trace, through the shared, bounded chunk cache | golden images, CI and forensics, where most blocks are never read |
+| `hydrate` | keeps a whole local copy in `disks/<name>/image/`, filled in the background | disaster recovery: a complete copy needs no network, nor the batch |
+| `restamp` | stamps every chunk of its snapshot again under serve's batch, once, keeping none of them | adopting a disk whose snapshot someone else's batch pays for |
+
+**hydrate.** The copy is a sparse file of the disk's size with a map of the blocks it holds. Reads take a block from it first and put what they fetch in it. A background hydration fetches the rest in disk order, 16 blocks at a time, without passing them through the cache, and tries again a minute after a run that left blocks out. A checkpoint writes its blocks into the copy before it moves the disk on, so the copy never fetches them again. A complete copy also answers block status, so the disk starts and runs with Bee unreachable; only checkpoints need it. Turning the policy off deletes the copy. Messages:
+
+```
+disk dr: hydrating, … of 32768 blocks local (…%), … failed
+disk dr: hydrated, all 32768 blocks local; 5191 fetched in 7s
+disk dr: hydration left … of 32768 blocks out, … could not be fetched; trying again in a minute
+disk dr: policy lazy; removing its local copy
+```
+
+**restamp.** serve lists every distinct chunk of the disk's snapshot: its manifest, metadata, boot trace and disk tree. It uploads them all under its batch over one stream, fetching each from the cache or else from Bee without keeping it, and waits until Bee has synced them. It then records the snapshot in `disks/<name>/restamp.json`. A checkpoint moves the record on to its new snapshot, whose new chunks it stamped itself, so the job runs once per disk. Uploading chunks under a second batch only matters when they carry stamps from another batch, such as a snapshot someone else imported. Messages:
+
+```
+disk vm: re-stamping the … chunks of snapshot … with batch …
+disk vm: re-stamped snapshot … in …
+```
+
 ## Lineages and keys
 
 A lineage is a Bee sequence feed: update *n* names snapshot *n*'s manifest, and Bee's `GET /feeds/<owner>/<topic>` resolves the feed to its latest one. Its owner is the address of a secp256k1 key, created with the lineage and kept in `keys/<owner>.key`, in hex, mode 0600. swarmblk refuses a key file that other users have any access to. Without the key, a lineage can still be read and branched, but not continued. Only one host may hold a lineage's key, since Swarm cannot stop two writers from overwriting each other's updates.
@@ -261,8 +290,8 @@ Any Swarm tool can read it: `GET /bzz/<snapshot>/disk.raw` is the raw disk, and 
 
 | Path, in the state directory | Holds |
 |---|---|
-| `chunks/` | every chunk swarmblk has handled, checked on write, under two levels of directories named by its address; it grows without bound, and can be deleted while nothing runs |
-| `disks/<name>/` | a writable disk: `lock`, `control.sock` while served, and its epochs `1/`, `2/`, …; deleting it loses the writes since its last snapshot |
+| `chunks/` | every chunk swarmblk has handled, checked on write, under two levels of directories named by its address; `serve -cache` bounds it, and it can be deleted while nothing runs |
+| `disks/<name>/` | a writable disk: `lock`, `control.sock` while served, its epochs `1/`, `2/`, …, its `policy`, and `image/` or `restamp.json` as that policy keeps them; deleting it loses the writes since its last snapshot |
 | `keys/<owner>.key` | lineage keys; back them up, and never share them |
 | `nbd.sock` | serve's default socket |
 
@@ -287,13 +316,17 @@ The state directory and `keys/` are created with mode 0700.
 | `… names neither a snapshot (64 hex digits) nor a lineage (0x<owner>/<topic>)` | check the argument |
 | `… has mode …; a lineage key must be private to its user (chmod 600)` | `chmod 600` the key file |
 | `Failed to get shared "write" lock` | the overlay's VM is still running |
+| `policy …: use lazy, hydrate or restamp` | check the policy's name |
+| `hydration policies are for a writable disk: serve it with -disk` | `-policy` needs `-disk` |
+| `disk …: re-stamping needs a batch to stamp with` | set `SWARMBLK_BATCH`, or pass `-batch` |
+| `size …: use bytes, or a number with K, M, G or T` | check `-cache` |
 
 ## Limits
 
 - Disks of 64 MiB to 1 TiB, a power of two in size.
 - No encryption: anyone with a reference can read the disk. Encrypt inside the guest if needed.
 - One writer per lineage, and one serve or checkpoint per disk at a time.
-- The chunk store is unbounded, and there is no failure policy yet: a block that cannot be fetched is an I/O error in the guest.
+- There is no failure policy yet: a block that cannot be fetched is an I/O error in the guest, unless the disk's local copy holds it.
 - NBD over Unix sockets only, on Linux, with Bee 2.8.2 or newer.
 
 ## Developer tools

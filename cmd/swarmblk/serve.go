@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ethersphere/bee/v2/pkg/storage"
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 
 	"github.com/petfold/swarmblk/internal/bee"
@@ -38,6 +39,8 @@ func cmdServe(args []string) {
 	fs.StringVar(&cfg.batch, "batch", os.Getenv("SWARMBLK_BATCH"), "immutable postage batch `id` that a disk's checkpoints stamp with ($SWARMBLK_BATCH if set)")
 	fs.DurationVar(&cfg.every, "every", 0, "checkpoint a disk at this `interval`, if it changed")
 	fs.StringVar(&cfg.qga, "qga", "", "freeze the guest's filesystems for checkpoints through the QEMU guest agent on this Unix `socket`")
+	fs.StringVar(&cfg.policy, "policy", "", "a disk's hydration `policy`: lazy, hydrate or restamp (default the disk's own, else lazy)")
+	cache := fs.String("cache", "4G", "bound the local chunk cache to this `size`, removing the leaves used least recently; 0 for no bound")
 	fs.StringVar(&cfg.record, "record", "", "write the guest's reads to this `file` as a boot trace when serve stops")
 	fs.StringVar(&cfg.prefetch, "prefetch", "", "prefetch from the boot trace in this `file` instead of the snapshot's")
 	fs.Int64Var(&cfg.window, "window", 16384, "prefetch at most this many `blocks` of the trace ahead of the guest")
@@ -45,6 +48,10 @@ func cmdServe(args []string) {
 	fs.Parse(args)
 	if fs.NArg() > 1 || cfg.root != "" && (fs.NArg() == 1 || cfg.disk != "") || cfg.root == "" && cfg.disk == "" && fs.NArg() == 0 {
 		usage()
+	}
+	var err error
+	if cfg.cache, err = parseSize(*cache); err != nil {
+		log.Fatal(err)
 	}
 	cfg.arg = fs.Arg(0)
 	cfg.disks = filepath.Join(*dir, "disks")
@@ -74,6 +81,8 @@ type serveConfig struct {
 	keys      string        // where lineage keys live
 	every     time.Duration // how often to checkpoint a disk, if at all
 	qga       string        // the guest agent's socket, if any
+	policy    string        // a disk's hydration policy, if given
+	cache     int64         // the bound on the chunk cache, in bytes, or 0
 	sock      string        // the Unix socket to listen on
 	record    string        // where to write the boot trace, if anywhere
 	prefetch  string        // a boot trace to prefetch from instead of the snapshot's
@@ -113,23 +122,28 @@ func retry(f fetch) fetch {
 // trace, or from cfg.prefetch, ahead of the guest (SPEC §6), and can record
 // a new trace. A writable disk takes live checkpoints (SPEC §8): asked for
 // on its control socket, every cfg.every, and at start if an earlier one
-// stopped part way. It reports to w.
+// stopped part way. It hydrates or re-stamps as its policy says (DESIGN
+// §3), and serve bounds the chunk cache to cfg.cache bytes. It reports to
+// w.
 func serve(ctx context.Context, c *bee.Client, s *store.Store, cfg serveConfig, out, w io.Writer) error {
 	switch {
 	case cfg.disk == "" && (cfg.every > 0 || cfg.qga != ""):
 		return errors.New("checkpoints are for a writable disk: serve it with -disk")
+	case cfg.disk == "" && cfg.policy != "":
+		return errors.New("hydration policies are for a writable disk: serve it with -disk")
 	case cfg.every > 0 && cfg.batch == "":
 		return errors.New("periodic checkpoints need a batch to stamp with")
 	}
 	w = &syncWriter{w: w}
 	var fetched atomic.Int64
-	get := s.Through(retry(func(ctx context.Context, addr swarm.Address) (swarm.Chunk, error) {
+	fetch := retry(func(ctx context.Context, addr swarm.Address) (swarm.Chunk, error) {
 		ch, err := c.Chunk(ctx, addr)
 		if err == nil {
 			fetched.Add(1)
 		}
 		return ch, err
-	}))
+	})
+	get := s.Through(fetch)
 	var snap *engine.Snapshot
 	var dev nbd.Device
 	var ds *diskState
@@ -138,7 +152,7 @@ func serve(ctx context.Context, c *bee.Client, s *store.Store, cfg serveConfig, 
 	var err error
 	switch {
 	case cfg.disk != "":
-		if ds, err = openDisk(ctx, c, s, get, cfg.disks, cfg.disk, cfg.arg, w); err != nil {
+		if ds, err = openDisk(ctx, c, s, get, cfg.disks, cfg.disk, cfg.arg, cfg.policy, w); err != nil {
 			return err
 		}
 		defer func() {
@@ -148,8 +162,11 @@ func serve(ctx context.Context, c *bee.Client, s *store.Store, cfg serveConfig, 
 		}()
 		snap, dev = ds.disk.Snapshot(), ds.disk
 		name, desc = cfg.disk, "swarmblk disk "+cfg.disk
+		// A boot trace only speeds reads up, and a hydrated disk needs none:
+		// without the network it can still start.
 		if trace, err = snapshot.ReadTrace(ctx, get, ds.base); err != nil {
-			return err
+			fmt.Fprintf(w, "serve: disk %s: no boot trace: %v\n", cfg.disk, err)
+			trace = nil
 		}
 	case cfg.root != "":
 		r, err := swarm.ParseHexAddress(cfg.root)
@@ -197,13 +214,39 @@ func serve(ctx context.Context, c *bee.Client, s *store.Store, cfg serveConfig, 
 		fmt.Fprintf(w, "serve: prefetching %d blocks of the boot trace, up to %d ahead of the guest\n", pf.Blocks(), cfg.window)
 	}
 
-	// A writable disk's checkpoints run beside the export; serve waits for
-	// them before the disk closes.
+	// The cache sweeps, and a writable disk's checkpoints, hydration and
+	// re-stamping, run beside the export; serve waits for them before the
+	// disk closes.
 	var bg sync.WaitGroup
 	defer bg.Wait()
+	if cfg.cache > 0 {
+		bg.Add(1)
+		go func() {
+			defer bg.Done()
+			sweepCache(ctx, s, cfg.cache, w)
+		}()
+	}
 	mode := "read-only"
 	if ds != nil {
-		mode = fmt.Sprintf("writable, epoch %d holding %d blocks, on snapshot %s", ds.disk.Active().Super().Epoch, len(ds.disk.Active().Blocks()), ds.base.Ref)
+		mode = fmt.Sprintf("writable, epoch %d holding %d blocks, on snapshot %s, policy %s", ds.disk.Active().Super().Epoch, len(ds.disk.Active().Blocks()), ds.base.Ref, ds.policy)
+		switch {
+		case ds.policy == policyHydrate:
+			bg.Add(1)
+			go func() {
+				defer bg.Done()
+				ds.keepHydrated(ctx, storage.GetterFunc(fetch), w)
+			}()
+		case ds.policy == policyRestamp && cfg.batch == "":
+			fmt.Fprintf(w, "serve: disk %s: re-stamping needs a batch to stamp with\n", ds.name)
+		case ds.policy == policyRestamp:
+			bg.Add(1)
+			go func() {
+				defer bg.Done()
+				if err := ds.restamp(ctx, c, s, get, cfg.batch, w); err != nil && ctx.Err() == nil {
+					fmt.Fprintf(w, "serve: disk %s: re-stamping: %v\n", ds.name, err)
+				}
+			}()
+		}
 		run := func(how string, w io.Writer) (swarm.Address, error) {
 			snap, err := checkpointDisk(ctx, ds, c, s, get, cfg.keys, cfg.batch, cfg.qga, w)
 			if err != nil {
@@ -334,6 +377,29 @@ func serveControl(ctx context.Context, l net.Listener, run func(string, io.Write
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// sweepInterval is how often serve sweeps the chunk cache.
+var sweepInterval = 5 * time.Minute
+
+// sweepCache keeps the store within limit bytes until ctx ends, sweeping it
+// at once and then every sweepInterval, and reports what each sweep
+// removes to w.
+func sweepCache(ctx context.Context, s *store.Store, limit int64, w io.Writer) {
+	for {
+		sw, err := s.Sweep(limit)
+		switch {
+		case err != nil:
+			fmt.Fprintf(w, "serve: sweeping the chunk cache: %v\n", err)
+		case sw.Removed > 0:
+			fmt.Fprintf(w, "serve: chunk cache: removed %d leaves (%d MiB) used least recently; %d MiB left\n", sw.Removed, sw.Freed>>20, sw.Bytes>>20)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(sweepInterval):
+		}
+	}
+}
 
 // listen listens on a Unix socket at path that only this user can reach.
 // It replaces a socket that nobody listens on any more, but not one in use.

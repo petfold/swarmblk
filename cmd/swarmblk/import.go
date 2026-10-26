@@ -16,6 +16,7 @@ import (
 
 	"github.com/ethersphere/bee/v2/pkg/file/pipeline/builder"
 	"github.com/ethersphere/bee/v2/pkg/file/redundancy"
+	"github.com/ethersphere/bee/v2/pkg/storage"
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 
 	"github.com/petfold/swarmblk/internal/bee"
@@ -37,6 +38,11 @@ func cmdImport(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	release, err := s.Hold() // the new chunks exist only here until synced
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer release()
 	snap, err := importImage(context.Background(), bee.New(*beeURL, 64), s, *batch, fs.Arg(0), os.Stderr)
 	if err != nil {
 		log.Fatal(err)
@@ -144,6 +150,11 @@ func checkBatch(ctx context.Context, c *bee.Client, batch string) error {
 // s in that order over one stream under a new tag, and waits until all of
 // them are synced (SPEC §8, steps 3 to 6). It reports progress to w.
 func upload(ctx context.Context, c *bee.Client, s *store.Store, batch string, addrs []swarm.Address, w io.Writer) error {
+	return uploadFrom(ctx, c, s, batch, addrs, w)
+}
+
+// uploadFrom is upload with the chunks from get.
+func uploadFrom(ctx context.Context, c *bee.Client, get storage.Getter, batch string, addrs []swarm.Address, w io.Writer) error {
 	if err := checkRoom(ctx, c, batch, addrs, w); err != nil {
 		return err
 	}
@@ -157,7 +168,7 @@ func upload(ctx context.Context, c *bee.Client, s *store.Store, batch string, ad
 		return err
 	}
 	for i, a := range addrs {
-		ch, err := s.Get(ctx, a)
+		ch, err := get.Get(ctx, a)
 		if err == nil {
 			err = st.Put(ch)
 		}
