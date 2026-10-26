@@ -44,14 +44,14 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 ## Phase 2 — Block engine over NBD
 
 - [x] NBD server: evaluate an existing Go library (for example pojntfx/go-nbd) for structured replies, block status, flush, trim and write-zeroes; otherwise implement that subset. Neither library checked had them, so `internal/nbd` implements the subset, tested against QEMU's client (DESIGN §12)
-- [x] Write epochs with replayable, checksummed index; flush and FUA durability (SPEC §11): `internal/epoch`, `engine.Disk` and `swarmblk serve -disk`. Turning an epoch into a snapshot comes with live checkpoints
+- [x] Write epochs with replayable, checksummed index; flush and FUA durability (SPEC §11): `internal/epoch`, `engine.Disk` and `swarmblk serve -disk`
 - [x] Tree and chunk caches; zero short-circuit; holes through block status; parallel verified fetches: `internal/engine`, exported read-only by `swarmblk serve`. The chunk cache stays unbounded until the hydration policy
 - [x] Trace-driven prefetch (`prefetch.bin`, SPEC §6): `serve -record`, `checkpoint -prefetch`, prefetch ahead of the guest ([first runs](docs/results/phase2-prefetch-2026-10-26.md))
 - [x] Cold-boot measurement through the engine, on a disk no node has fetched, to set the bound Phase 0 left open: Alpine booted cold through node B in 17–18 min without prefetch and in 3.4–3.5 min with its trace ([results](docs/results/phase2-cold-2026-10-26.md)); Peter sets the bound
 - [ ] Hydration as a per-disk policy: lazy, hydrate, or re-stamp only (DESIGN §3)
 - [x] Filesystem round trip without root or a VM: an ext4 image built with `mkfs.ext4 -d`, changed with `debugfs`, checkpointed, and exported on another node; `e2fsck -fn` must be clean and every file's checksum equal (`TestFilesystem`, and `TestLiveFilesystem` through node B)
 - [ ] Crash consistency with a real guest: files written with checksums and `fsync`, QEMU killed at random points, the overlay checkpointed and restored on another node; `fsck` must be clean and every file that was `fsync`ed intact, over many runs. With the guest's own driver writing, the same workload on ext4, XFS, Btrfs and ZFS compares what checkpoints upload (DESIGN §9), and so what a native ZFSwarm would save
-- [ ] Live checkpoints from an atomic cut; guest-agent freeze for application consistency
+- [x] Live checkpoints from an atomic cut; guest-agent freeze for application consistency: `serve -disk` checkpoints the disk every `-every` or when `checkpoint -disk` asks, freezing the guest's filesystems with `-qga` (SPEC §8). A checkpoint taken while CirrOS wrote was crash-consistent, and the last one matched the disk byte for byte ([results](docs/results/phase2-live-2026-10-26.md)); the freeze is tested against a fake agent only
 - [ ] Failure policy: block the guest and raise an alarm after retries
 - [ ] `PR_SET_IO_FLUSHER` and locked memory for the engine and Bee
 - [ ] Disk card with VM definition, UEFI variables and vTPM state (SPEC §12)
