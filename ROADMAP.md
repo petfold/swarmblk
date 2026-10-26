@@ -47,7 +47,7 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - [ ] Write epochs with replayable, checksummed index; flush and FUA durability (SPEC §11)
 - [x] Tree and chunk caches; zero short-circuit; holes through block status; parallel verified fetches: `internal/engine`, exported read-only by `swarmblk serve`. The chunk cache stays unbounded until the hydration policy
 - [x] Trace-driven prefetch (`prefetch.bin`, SPEC §6): `serve -record`, `checkpoint -prefetch`, prefetch ahead of the guest ([first runs](docs/results/phase2-prefetch-2026-10-26.md))
-- [ ] Cold-boot measurement through the engine, on a disk no node has fetched, to set the bound Phase 0 left open
+- [x] Cold-boot measurement through the engine, on a disk no node has fetched, to set the bound Phase 0 left open: Alpine booted cold through node B in 17–18 min without prefetch and in 3.4–3.5 min with its trace ([results](docs/results/phase2-cold-2026-10-26.md)); Peter sets the bound
 - [ ] Hydration as a per-disk policy: lazy, hydrate, or re-stamp only (DESIGN §3)
 - [x] Filesystem round trip without root or a VM: an ext4 image built with `mkfs.ext4 -d`, changed with `debugfs`, checkpointed, and exported on another node; `e2fsck -fn` must be clean and every file's checksum equal (`TestFilesystem`, and `TestLiveFilesystem` through node B)
 - [ ] Crash consistency with a real guest: files written with checksums and `fsync`, QEMU killed at random points, the overlay checkpointed and restored on another node; `fsck` must be clean and every file that was `fsync`ed intact, over many runs. With the guest's own driver writing, the same workload on ext4, XFS and Btrfs compares what checkpoints upload (DESIGN §9)

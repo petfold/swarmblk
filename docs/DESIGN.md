@@ -101,7 +101,7 @@ Reads are metered. Each peer connection forgives a little debt every second (Bee
 
 Bulk transfers (prefetch, hydration, re-stamping) pay as they go, so their rate is a cost setting as well as a speed one; whatever comes free is a bonus. A light node also sustained only about 170 chunks/s (0.7 MB/s) however many requests were in flight, which looks bound by settlement rather than parallelism. Faster bulk transfers therefore need more nodes, or prepaid direct fetching from storers as in [directswarm](https://github.com/petfold/directswarm).
 
-Cold boot ≈ dependent-read chain length × retrieval latency without prefetch; with prefetch it is ≈ bytes read ÷ parallel throughput. Phase 0 measures both inputs.
+Cold boot ≈ dependent-read chain length × retrieval latency without prefetch; with prefetch it is ≈ bytes read ÷ parallel throughput. Phase 0 measured both inputs, and Phase 2 confirmed them: through one light node, an Alpine boot that reads 70 MiB took 17–18 minutes one read at a time and 3.5 minutes with its trace prefetched ([results](results/phase2-cold-2026-10-26.md)).
 
 ## 4. Write path and checkpoints
 
