@@ -4,7 +4,7 @@ A virtual disk backed by Ethereum Swarm.
 
 Each snapshot is a standard Swarm file, so its chunk tree is the block map. Unchanged blocks are shared between snapshots, zero regions cost nothing, and any Swarm tool can fetch a snapshot as a raw image and verify it by its root.
 
-**Status:** Phase 0 (measurement) done; Phase 1 (the offline checkpointer) under way. See [ROADMAP.md](ROADMAP.md).
+**Status:** experimental. Phases 0 and 1 are done, and Phase 2, the block engine, is under way: a VM runs straight on a swarmblk disk and takes snapshots while it works. See [ROADMAP.md](ROADMAP.md). To try it, follow the [user guide](docs/GUIDE.md).
 
 ## Why a block device
 
@@ -50,7 +50,11 @@ Disaster recovery is the first target, and golden images for CI and labs the sec
 
 Details: [docs/DESIGN.md](docs/DESIGN.md) (architecture) and [docs/SPEC.md](docs/SPEC.md) (formats).
 
-## Try it without swarmblk code
+## Try it
+
+The [user guide](docs/GUIDE.md) walks through putting a small VM's disk on Swarm, booting it from there, taking live snapshots, and restoring it on another computer.
+
+### Without swarmblk code
 
 Upload a raw image with `Swarm-Redundancy-Level: 0`, then boot it straight from Bee through QEMU's HTTP block driver with a local overlay. The full runbook, including the pitfalls, is in [docs/PHASE0.md](docs/PHASE0.md).
 
