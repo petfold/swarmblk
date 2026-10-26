@@ -34,7 +34,7 @@ Prove the data model: overlay changes become a new Swarm tree that restores else
 - [x] `swarmblk import <image.raw>`: chunk-level upload at redundancy 0, producing the same root as Phase 0's `/bytes` upload
 - [x] `swarmblk checkpoint <overlay.qcow2>`: the overlay's own blocks from `qemu-img map --output=json` (zero clusters become Z_0), read from the qcow2 file at the mapped offsets, rehash, rebuild, upload what differs from the parent, confirm by tag, rebase the overlay, publish (SPEC §8)
 - [x] `swarmblk restore <lineage|manifest>`: a fresh qcow2 overlay on the HTTP backing, or `swarmblk export` to a raw file with verified chunk fetches
-- [ ] `swarmblk diff <a> <b>`: changed block ranges between two snapshots
+- [x] `swarmblk diff <a> <b>`: changed block ranges between two snapshots
 - [ ] Discard check: with QEMU `discard=unmap,detect-zeroes=unmap`, guest discards on the overlay appear as zero clusters, not holes onto the backing image
 
 **Gate:** roots match Bee's pipeline for the same bytes, and a restore on a second host is byte-identical (SPEC §14, I7).
