@@ -1,5 +1,6 @@
-// Package engine serves swarmblk disks as block devices (DESIGN §3, §8). So
-// far it has the read path: a snapshot's disk, read from its chunk tree.
+// Package engine serves swarmblk disks as block devices (DESIGN §3, §8): a
+// snapshot's disk, read from its chunk tree, and a writable disk on top of
+// one, with an optional local copy of the snapshot's disk.
 package engine
 
 import (
@@ -30,7 +31,8 @@ const Fetchers = 64
 // chunk that several requests need at once is fetched once.
 type Snapshot struct {
 	g      tree.Geometry
-	root   []swarm.Address
+	addr   swarm.Address   // the disk tree's root
+	root   []swarm.Address // its references
 	get    storage.Getter
 	sem    chan struct{}
 	leaves singleflight.Group
@@ -42,8 +44,32 @@ type Snapshot struct {
 	rec atomic.Pointer[Recorder] // notes reads for a boot trace, if set
 	pf  atomic.Pointer[Prefetch] // follows a boot trace ahead of the guest, if set
 
-	local storage.Getter // chunks at hand without a fetch, if set
+	local storage.Getter           // chunks at hand without a fetch, if set
+	img   atomic.Pointer[imageRef] // a local copy that reads look in first and fill, if set
 }
+
+// imageRef is a Snapshot's image, and a root that it may hold instead of
+// the Snapshot's.
+type imageRef struct {
+	m     *Image
+	ahead swarm.Address
+}
+
+// SetImage gives the Snapshot a local copy of its disk, which reads look in
+// first and put what they fetch in. Reads use the image while it holds this
+// disk, or ahead, if not zero: the next snapshot's disk, when a frozen
+// epoch above holds every block in which the two differ. A nil image
+// removes it.
+func (s *Snapshot) SetImage(m *Image, ahead swarm.Address) {
+	if m == nil {
+		s.img.Store(nil)
+		return
+	}
+	s.img.Store(&imageRef{m, ahead})
+}
+
+// Root returns the root of the disk tree.
+func (s *Snapshot) Root() swarm.Address { return s.addr }
 
 // SetLocal tells the Snapshot where chunks are at hand without a fetch,
 // such as the local store, for LocalBlock. Call it before use.
@@ -64,7 +90,7 @@ func Open(ctx context.Context, get storage.Getter, root swarm.Address, fetchers 
 	if fetchers <= 0 {
 		fetchers = Fetchers
 	}
-	return &Snapshot{g: g, root: refs, get: get, sem: make(chan struct{}, fetchers), nodes: map[string][]swarm.Address{}}, nil
+	return &Snapshot{g: g, addr: root, root: refs, get: get, sem: make(chan struct{}, fetchers), nodes: map[string][]swarm.Address{}}, nil
 }
 
 // Size returns the disk's size in bytes.
@@ -151,11 +177,14 @@ func (s *Snapshot) leaf(ctx context.Context, b int64) (swarm.Address, int64, err
 }
 
 // LocalBlock returns block b's contents if they are at hand without
-// waiting for the network: in a zero subtree or a zero leaf, or with the
-// leaf and its path in the tree cache or the local getter.
+// waiting for the network: in the image, in a zero subtree or a zero leaf,
+// or with the leaf and its path in the tree cache or the local getter.
 func (s *Snapshot) LocalBlock(ctx context.Context, b int64) ([]byte, bool) {
 	if b < 0 || b >= s.g.Leaves() {
 		return nil, false
+	}
+	if block, ok := s.imageBlock(b); ok {
+		return block, true
 	}
 	refs := s.root
 	for j := s.g.Levels; ; j-- {
@@ -212,6 +241,10 @@ func (s *Snapshot) ReadAt(ctx context.Context, p []byte, off int64) error {
 		dst := p[lo-off : hi-off]
 		g.Go(func() error {
 			b := first / swarm.ChunkSize
+			if block, ok := s.imageBlock(b); ok {
+				copy(dst, block[lo-first:hi-first])
+				return nil
+			}
 			leaf, _, err := s.leaf(gctx, b)
 			if err != nil {
 				return err
@@ -220,28 +253,77 @@ func (s *Snapshot) ReadAt(ctx context.Context, p []byte, off int64) error {
 			if leaf.Equal(tree.Zero(0)) {
 				return nil
 			}
-			ch, err := s.chunk(gctx, leaf)
+			block, err := s.block(gctx, b, leaf)
 			if err != nil {
-				return fmt.Errorf("block %d: leaf %s: %w", b, leaf, err)
+				return err
 			}
-			if span := binary.LittleEndian.Uint64(ch.Data()); span != swarm.ChunkSize {
-				return fmt.Errorf("block %d: leaf %s spans %d bytes; format 1 has only full leaves", b, leaf, span)
-			}
-			// A payload may lack trailing zeros (SPEC §13).
-			if payload := ch.Data()[swarm.SpanSize:]; lo-first < int64(len(payload)) {
-				copy(dst, payload[lo-first:min(hi-first, int64(len(payload)))])
-			}
+			copy(dst, block[lo-first:hi-first])
 			return nil
 		})
 	}
 	return g.Wait()
 }
 
+// image returns the Snapshot's image if it holds this disk, or the one
+// ahead.
+func (s *Snapshot) image() *Image {
+	r := s.img.Load()
+	if r == nil {
+		return nil
+	}
+	if root := r.m.Root(); !root.Equal(s.addr) && (r.ahead.IsZero() || !root.Equal(r.ahead)) {
+		return nil
+	}
+	return r.m
+}
+
+// imageBlock returns block b from the image, if the Snapshot has one that
+// holds this disk, or the one ahead, and the block.
+func (s *Snapshot) imageBlock(b int64) ([]byte, bool) {
+	if m := s.image(); m != nil {
+		return m.Block(b)
+	}
+	return nil, false
+}
+
+// block fetches block b, whose leaf is leaf, and puts it in the image.
+func (s *Snapshot) block(ctx context.Context, b int64, leaf swarm.Address) ([]byte, error) {
+	ch, err := s.chunk(ctx, leaf)
+	if err != nil {
+		return nil, fmt.Errorf("block %d: leaf %s: %w", b, leaf, err)
+	}
+	block, err := leafBlock(ch)
+	if err != nil {
+		return nil, fmt.Errorf("block %d: %w", b, err)
+	}
+	if r := s.img.Load(); r != nil {
+		r.m.Put(s.addr, b, block) // a block that cannot be kept is fetched again
+	}
+	return block, nil
+}
+
+// leafBlock returns a leaf's block: its payload, which may lack trailing
+// zeros (SPEC §13), padded to 4 KiB.
+func leafBlock(ch swarm.Chunk) ([]byte, error) {
+	if span := binary.LittleEndian.Uint64(ch.Data()); span != swarm.ChunkSize {
+		return nil, fmt.Errorf("leaf %s spans %d bytes; format 1 has only full leaves", ch.Address(), span)
+	}
+	block := make([]byte, swarm.ChunkSize)
+	copy(block, ch.Data()[swarm.SpanSize:])
+	return block, nil
+}
+
 // Extents describes the bytes from off on in the base:allocation context:
 // blocks with zero leaves, in zero subtrees or not, are holes that read as
-// zeros, and all others are data. If a chunk cannot be fetched part way, it
+// zeros, and all others are data. An image that holds all those blocks
+// answers without the tree. If a chunk cannot be fetched part way, it
 // describes the bytes up to there.
 func (s *Snapshot) Extents(ctx context.Context, off, length int64) ([]nbd.Extent, error) {
+	if m := s.image(); m != nil {
+		if ext, ok := m.Extents(off, min(length, s.g.Size-off)); ok {
+			return ext, nil
+		}
+	}
 	end := min(off+length, s.g.Size)
 	var out []nbd.Extent
 	for pos := off; pos < end; {

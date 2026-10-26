@@ -135,9 +135,13 @@ func (s *Snapshot) Prefetch(ctx context.Context, runs []tree.Range, window int64
 		go func() {
 			defer wg.Done()
 			for b := range work {
+				if _, ok := s.imageBlock(b); ok {
+					p.fetched.Add(1)
+					continue
+				}
 				leaf, _, err := s.leaf(ctx, b)
 				if err == nil && !leaf.Equal(tree.Zero(0)) {
-					_, err = s.chunk(ctx, leaf)
+					_, err = s.block(ctx, b, leaf)
 				}
 				if err != nil {
 					p.failed.Add(1)
