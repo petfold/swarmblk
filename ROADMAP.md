@@ -35,9 +35,11 @@ Prove the data model: overlay changes become a new Swarm tree that restores else
 - [x] `swarmblk checkpoint <overlay.qcow2>`: the overlay's own blocks from `qemu-img map --output=json` (zero clusters become Z_0), read from the qcow2 file at the mapped offsets, rehash, rebuild, upload what differs from the parent, confirm by tag, rebase the overlay, publish (SPEC §8)
 - [x] `swarmblk restore <lineage|manifest>`: a fresh qcow2 overlay on the HTTP backing, or `swarmblk export` to a raw file with verified chunk fetches
 - [x] `swarmblk diff <a> <b>`: changed block ranges between two snapshots
-- [ ] Discard check: with QEMU `discard=unmap,detect-zeroes=unmap`, guest discards on the overlay appear as zero clusters, not holes onto the backing image
+- [x] Discard check: with QEMU `discard=unmap,detect-zeroes=unmap`, guest discards on the overlay appear as zero clusters, not holes onto the backing image ([gate run](docs/results/phase1-gate-2026-10-26.md))
 
 **Gate:** roots match Bee's pipeline for the same bytes, and a restore on a second host is byte-identical (SPEC §14, I7).
+
+Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS guest changed a disk restored from Swarm, laptop A checkpointed it, and laptop B exported the lineage through its own Bee node with the same sha256 as the guest's disk; QEMU read and booted it through node B too.
 
 ## Phase 2 — Block engine over NBD
 
