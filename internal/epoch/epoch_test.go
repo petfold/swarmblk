@@ -144,6 +144,42 @@ func TestEpoch(t *testing.T) {
 	if _, err := Create(dir, testSuper()); err == nil {
 		t.Error("Create replaced an epoch")
 	}
+	if Abandoned(dir) {
+		t.Error("a whole epoch counts as abandoned")
+	}
+}
+
+// TestAbandoned stands for crashes during Create: what each step leaves is
+// abandoned until the superblock is in place, and once a record is written
+// it is not, even without one.
+func TestAbandoned(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "2")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !Abandoned(dir) {
+		t.Error("an empty directory is not abandoned")
+	}
+	for _, name := range []string{dataFile, indexFile, superFile + ".new"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !Abandoned(dir) {
+			t.Errorf("a directory with an empty %s is not abandoned", name)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, indexFile), make([]byte, recordSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if Abandoned(dir) {
+		t.Error("a directory with a record is abandoned")
+	}
+	if _, err := Create(dir, testSuper()); err == nil {
+		t.Error("Create took a directory that exists")
+	}
+	if _, err := os.Stat(filepath.Join(dir, indexFile)); err != nil {
+		t.Error("a failed Create removed a directory it did not make")
+	}
 }
 
 // TestRecovery stands for crashes: it rebuilds the files as a crash could

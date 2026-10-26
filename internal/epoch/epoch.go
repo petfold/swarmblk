@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -38,12 +39,13 @@ const (
 
 // Super is an epoch's superblock, super.json.
 type Super struct {
-	Format string        `json:"format"`
-	Epoch  uint64        `json:"epoch"`
-	Parent swarm.Address `json:"parent"`    // the snapshot the writes go on top of
-	Root   swarm.Address `json:"disk_root"` // the parent's disk root
-	Size   int64         `json:"size"`
-	State  string        `json:"state"`
+	Format   string         `json:"format"`
+	Epoch    uint64         `json:"epoch"`
+	Parent   swarm.Address  `json:"parent"`    // the snapshot the writes go on top of
+	Root     swarm.Address  `json:"disk_root"` // the parent's disk root
+	Size     int64          `json:"size"`
+	State    string         `json:"state"`
+	Snapshot *swarm.Address `json:"snapshot,omitempty"` // the snapshot of the epoch's writes, once uploading
 }
 
 // Files in an epoch's directory.
@@ -145,7 +147,9 @@ type Epoch struct {
 	blocks map[int64]*Block
 }
 
-// Create makes a new epoch in dir, which must not exist yet.
+// Create makes a new epoch in dir, which must not exist yet. The
+// superblock comes last: a directory without one is what a Create that did
+// not finish left, and Abandoned tells it.
 func Create(dir string, s Super) (*Epoch, error) {
 	if s.Size <= 0 || s.Size%swarm.ChunkSize != 0 {
 		return nil, fmt.Errorf("epoch: disk size %d", s.Size)
@@ -157,9 +161,15 @@ func Create(dir string, s Super) (*Epoch, error) {
 	if s.State == "" {
 		s.State = Active
 	}
-	if err := writeSuper(dir, s); err != nil {
+	e, err := create(dir, s)
+	if err != nil {
+		os.RemoveAll(dir)
 		return nil, err
 	}
+	return e, nil
+}
+
+func create(dir string, s Super) (*Epoch, error) {
 	e := &Epoch{dir: dir, super: s, blocks: map[int64]*Block{}}
 	var err error
 	if e.data, err = os.OpenFile(filepath.Join(dir, dataFile), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600); err != nil {
@@ -172,11 +182,29 @@ func Create(dir string, s Super) (*Epoch, error) {
 	if err := e.lock(); err != nil {
 		return nil, err
 	}
-	if err := syncDir(dir); err != nil {
+	if err := writeSuper(dir, s); err != nil {
+		e.Close()
+		return nil, err
+	}
+	if err := syncDir(filepath.Dir(dir)); err != nil {
 		e.Close()
 		return nil, err
 	}
 	return e, nil
+}
+
+// Abandoned reports whether dir holds only what a Create that did not finish
+// left: no superblock and no records. Such a directory can go.
+func Abandoned(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, superFile)); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	for _, name := range []string{dataFile, indexFile} {
+		if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && fi.Size() > 0 || err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+	}
+	return true
 }
 
 // Open opens the epoch in dir and recovers it: it replays the index and
@@ -292,16 +320,24 @@ func (e *Epoch) Super() Super {
 
 // SetState records a new state in the superblock, durably.
 func (e *Epoch) SetState(state string) error {
+	return e.Update(func(s *Super) { s.State = state })
+}
+
+// Update changes the superblock with change, durably.
+func (e *Epoch) Update(change func(*Super)) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	s := e.super
-	s.State = state
+	change(&s)
 	if err := writeSuper(e.dir, s); err != nil {
 		return err
 	}
 	e.super = s
 	return nil
 }
+
+// Dir returns the epoch's directory.
+func (e *Epoch) Dir() string { return e.dir }
 
 // append writes data, if any, and then its record.
 func (e *Epoch) append(r record, data []byte) error {
