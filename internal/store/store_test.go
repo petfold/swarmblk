@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/ethersphere/bee/v2/pkg/cac"
 	"github.com/ethersphere/bee/v2/pkg/file/joiner"
@@ -185,5 +186,74 @@ func TestBeeRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Error("Bee's joiner read back different bytes")
+	}
+}
+
+// TestSweep fills a store with leaves of known ages and other chunks, and
+// sweeps it below its size: the oldest leaves go first, a leaf read lately
+// stays, the other chunks all stay, and a writer's hold stops the sweep.
+func TestSweep(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	others := testChunks(t)[1:] // a short chunk, an intermediate and a root
+	for _, ch := range others {
+		if err := s.Put(ctx, ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var leaves []swarm.Chunk
+	start := time.Now().Add(-48 * time.Hour)
+	for i := range 20 {
+		ch, err := cac.New(random(swarm.ChunkSize))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Put(ctx, ch); err != nil {
+			t.Fatal(err)
+		}
+		used := start.Add(time.Duration(i) * time.Hour) // leaf 0 is the oldest
+		if err := os.Chtimes(s.path(ch.Address()), used, used); err != nil {
+			t.Fatal(err)
+		}
+		leaves = append(leaves, ch)
+	}
+	if _, err := s.Get(ctx, leaves[0].Address()); err != nil { // used now
+		t.Fatal(err)
+	}
+
+	if sw, err := s.Sweep(1 << 30); err != nil || sw.Removed != 0 {
+		t.Fatalf("a sweep under the limit: %+v, %v", sw, err)
+	}
+	release, err := s.Hold()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw, err := s.Sweep(1); err != nil || !sw.Skipped || sw.Removed != 0 {
+		t.Fatalf("a sweep while a writer holds the store: %+v, %v", sw, err)
+	}
+	release()
+
+	limit := int64(12 * swarm.ChunkSize) // the leaves alone take 20 blocks
+	sw, err := s.Sweep(limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.Bytes > limit/10*9 || sw.Removed == 0 || sw.Freed != sw.Removed*swarm.ChunkSize {
+		t.Fatalf("swept to %+v, want at most %d bytes", sw, limit/10*9)
+	}
+	for i, ch := range leaves {
+		_, err := s.Get(ctx, ch.Address())
+		// Leaf 0 was read lately, so leaves 1 to Removed went.
+		if gone := i >= 1 && int64(i) <= sw.Removed; gone != errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("leaf %d: %v, removed %d", i, err, sw.Removed)
+		}
+	}
+	for _, ch := range others {
+		if _, err := s.Get(ctx, ch.Address()); err != nil {
+			t.Errorf("chunk %s, not a leaf, was removed: %v", ch.Address(), err)
+		}
 	}
 }
