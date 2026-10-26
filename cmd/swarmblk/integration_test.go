@@ -164,7 +164,7 @@ func TestLiveCheckpoint(t *testing.T) {
 
 		progress.Reset()
 		start := time.Now()
-		next, err := checkpoint(ctx, c, s, keys, batch, ov, false, &progress)
+		next, err := checkpoint(ctx, c, s, keys, batch, ov, false, nil, &progress)
 		t.Logf("round %d, %v:\n%s", round, time.Since(start).Round(time.Millisecond), progress.String())
 		if err != nil {
 			t.Fatal(err)
@@ -236,7 +236,7 @@ func TestLiveCheckpoint(t *testing.T) {
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(sctx, c, served, l.String(), "", filepath.Join(t.TempDir(), "nbd.sock"), pw, io.Discard)
+		done <- serve(sctx, c, served, serveConfig{arg: l.String(), sock: filepath.Join(t.TempDir(), "nbd.sock")}, pw, io.Discard)
 		pw.Close()
 	}()
 	line, err := bufio.NewReader(pr).ReadString('\n')

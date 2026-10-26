@@ -9,10 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/ethersphere/bee/v2/pkg/swarm"
+
 	"github.com/petfold/swarmblk/internal/lineage"
+	"github.com/petfold/swarmblk/internal/snapshot"
+	"github.com/petfold/swarmblk/internal/tree"
 )
 
 // startServe runs serve for arg or root with an empty store, as on another
@@ -20,14 +25,21 @@ import (
 // returns its error and log.
 func (cp *checkpointer) startServe(t *testing.T, arg, root string) (string, func() (error, string)) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "nbd.sock")
+	return cp.startServeWith(t, serveConfig{arg: arg, root: root})
+}
+
+// startServeWith is startServe with more of serve's configuration; it picks
+// the socket.
+func (cp *checkpointer) startServeWith(t *testing.T, cfg serveConfig) (string, func() (error, string)) {
+	t.Helper()
+	cfg.sock = filepath.Join(t.TempDir(), "nbd.sock")
 	pr, pw := io.Pipe()
 	var log bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	s := newStore(t)
 	go func() {
-		done <- serve(ctx, cp.c, s, arg, root, sock, pw, &log)
+		done <- serve(ctx, cp.c, s, cfg, pw, &log)
 		pw.Close()
 	}()
 	line, err := bufio.NewReader(pr).ReadString('\n')
@@ -138,8 +150,70 @@ func TestServeSocket(t *testing.T) {
 
 	cp := newCheckpointer(t)
 	for _, root := range []string{"swarmblk", strings.Repeat("ab", 32)} {
-		if err := serve(context.Background(), cp.c, newStore(t), "", root, filepath.Join(dir, "x.sock"), io.Discard, io.Discard); err == nil {
+		if err := serve(context.Background(), cp.c, newStore(t), serveConfig{root: root, sock: filepath.Join(dir, "x.sock")}, io.Discard, io.Discard); err == nil {
 			t.Errorf("serve took the root %q", root)
 		}
+	}
+}
+
+// TestServeTrace records a boot trace while QEMU reads a served snapshot,
+// stores it with a checkpoint, keeps it in the next one, and prefetches
+// from it when the lineage is served.
+func TestServeTrace(t *testing.T) {
+	needQEMU(t)
+	ctx := context.Background()
+	cp := newCheckpointer(t)
+	snap0, img := cp.importDisk(t)
+	trace := filepath.Join(t.TempDir(), "boot.trace")
+	uri, stop := cp.startServeWith(t, serveConfig{arg: snap0.String(), record: trace})
+	run(t, "qemu-io", "-r", "-f", "raw", "-c", "read 1M 64k", "-c", "read 0 4k", "-c", "read 1032k 4k", uri)
+	if err, log := stop(); err != nil || !strings.Contains(log, "wrote a boot trace of 17 blocks in 2 runs") {
+		t.Fatalf("serve ended with %v:\n%s", err, log)
+	}
+	b, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []tree.Range{{Start: 256, Count: 16}, {Start: 0, Count: 1}}
+	if runs, err := snapshot.DecodeTrace(b); err != nil || !reflect.DeepEqual(runs, want) {
+		t.Fatalf("the trace holds %v, %v; want %v", runs, err, want)
+	}
+
+	o := newOverlay(t, snap0, img)
+	o.write(t, "write -P 0x41 4M 4k")
+	snap1, err := cp.runWith(t, o, false, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.write(t, "write -P 0x42 5M 4k")
+	snap2, err := cp.run(t, o, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []swarm.Address{snap1, snap2} {
+		s, err := snapshot.Read(ctx, cp.bee.Store, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runs, err := snapshot.ReadTrace(ctx, cp.bee.Store, s); err != nil || !reflect.DeepEqual(runs, want) {
+			t.Errorf("snapshot %s has the trace %v, %v; want %v", ref, runs, err, want)
+		}
+	}
+
+	l, _, _ := lineage.FromMeta(*mustMeta(t, cp, snap2).Lineage)
+	uri, stop = cp.startServe(t, l.String(), "")
+	if !bytes.Equal(readAll(t, "raw", uri), o.disk) {
+		t.Error("the served lineage reads different")
+	}
+	if err, log := stop(); err != nil || !strings.Contains(log, "prefetching 17 blocks") || !strings.Contains(log, "prefetched 17 of 17 trace blocks, 0 failed") {
+		t.Errorf("serve ended with %v:\n%s", err, log)
+	}
+
+	bad := filepath.Join(t.TempDir(), "bad.trace")
+	if err := os.WriteFile(bad, []byte("not a trace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := serve(ctx, cp.c, newStore(t), serveConfig{arg: snap0.String(), prefetch: bad, sock: filepath.Join(t.TempDir(), "x.sock")}, io.Discard, io.Discard); err == nil {
+		t.Error("serve took a bad trace")
 	}
 }

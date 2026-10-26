@@ -29,15 +29,26 @@ func cmdCheckpoint(args []string) {
 	batch := fs.String("batch", os.Getenv("SWARMBLK_BATCH"), "immutable postage batch `id` to stamp with ($SWARMBLK_BATCH if set)")
 	dir := fs.String("home", home(), "local state `directory` ($SWARMBLK_HOME if set)")
 	branch := fs.Bool("branch", false, "start a new lineage, even if this host holds the parent's")
+	prefetch := fs.String("prefetch", "", "store the boot trace in this `file` with the snapshot, rather than the parent's")
 	fs.Parse(args)
 	if fs.NArg() != 1 || *batch == "" {
 		usage()
+	}
+	var trace []byte
+	if *prefetch != "" {
+		var err error
+		if trace, err = os.ReadFile(*prefetch); err != nil {
+			log.Fatal(err)
+		}
+		if _, err := snapshot.DecodeTrace(trace); err != nil {
+			log.Fatalf("%s: %v", *prefetch, err)
+		}
 	}
 	s, err := store.Open(filepath.Join(*dir, "chunks"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	snap, err := checkpoint(context.Background(), bee.New(*beeURL, 64), s, filepath.Join(*dir, "keys"), *batch, fs.Arg(0), *branch, os.Stderr)
+	snap, err := checkpoint(context.Background(), bee.New(*beeURL, 64), s, filepath.Join(*dir, "keys"), *batch, fs.Arg(0), *branch, trace, os.Stderr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -54,9 +65,10 @@ const window = 16384
 // all are synced. It then points the overlay at the new snapshot, so that
 // the next checkpoint follows it, and publishes the snapshot as the next
 // update of the parent's lineage, or of a new one (SPEC §7). Lineage keys
-// live in keys. It reports progress to w and returns the snapshot's
-// reference, or the parent's if the overlay changes nothing.
-func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch, path string, branch bool, w io.Writer) (swarm.Address, error) {
+// live in keys. The snapshot gets the boot trace prefetch, if not nil, or
+// else keeps its parent's (SPEC §6). It reports progress to w and returns
+// the snapshot's reference, or the parent's if the overlay changes nothing.
+func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch, path string, branch bool, prefetch []byte, w io.Writer) (swarm.Address, error) {
 	if err := checkBatch(ctx, c, batch); err != nil {
 		return swarm.ZeroAddress, err
 	}
@@ -134,6 +146,15 @@ func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch,
 		meta.Stats.ChangedBlocks += r.Count
 	}
 	meta.Stats.NewChunks = int64(len(order))
+	if prefetch == nil {
+		runs, err := snapshot.ReadTrace(ctx, get, parent)
+		if err != nil {
+			return swarm.ZeroAddress, err
+		}
+		if runs != nil {
+			prefetch = snapshot.EncodeTrace(runs)
+		}
+	}
 
 	var mu sync.Mutex // the manifest's nodes are saved concurrently
 	seen := map[string]bool{}
@@ -148,7 +169,7 @@ func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch,
 		}
 		mu.Unlock()
 		return s.Put(ctx, ch)
-	}), s, meta, nil)
+	}), s, meta, prefetch)
 	if err != nil {
 		return swarm.ZeroAddress, err
 	}

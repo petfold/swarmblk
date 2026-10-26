@@ -2,11 +2,11 @@
 // the Phase 1 command line:
 //
 //	swarmblk import [-bee url] [-batch id] [-home dir] image.raw
-//	swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] overlay.qcow2
+//	swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] [-prefetch file] overlay.qcow2
 //	swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
 //	swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
 //	swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
-//	swarmblk serve [-bee url] [-home dir] [-socket path] lineage|snapshot | -root root
+//	swarmblk serve [-bee url] [-home dir] [-socket path] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
 //
 // import uploads a raw disk image as a format-1 tree (SPEC §2) in a first
 // snapshot. checkpoint turns a stopped VM's qcow2 overlay into the next
@@ -17,7 +17,9 @@
 // differ between two disks of the same size, each as its first block and the
 // number of blocks. serve exports a snapshot's disk, or the disk tree under
 // a root, read-only over NBD on a Unix socket, through the engine (DESIGN
-// §3), and prints the URI for QEMU. A lineage is given as 0x<owner>/<topic>
+// §3), and prints the URI for QEMU. It prefetches from the snapshot's boot
+// trace and can record a new one, which checkpoint -prefetch stores with the
+// next snapshot (SPEC §6). A lineage is given as 0x<owner>/<topic>
 // and stands for its latest snapshot. The defaults come from
 // $SWARMBLK_BEE_URL, $SWARMBLK_BATCH and $SWARMBLK_HOME.
 package main
@@ -56,11 +58,11 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   swarmblk import [-bee url] [-batch id] [-home dir] image.raw
-  swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] overlay.qcow2
+  swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] [-prefetch file] overlay.qcow2
   swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
   swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
   swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
-  swarmblk serve [-bee url] [-home dir] [-socket path] lineage|snapshot | -root root
+  swarmblk serve [-bee url] [-home dir] [-socket path] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
 `)
 	os.Exit(2)
 }

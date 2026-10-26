@@ -116,8 +116,15 @@ func newCheckpointer(t *testing.T) *checkpointer {
 
 func (cp *checkpointer) run(t *testing.T, o *testOverlay, branch bool) (swarm.Address, error) {
 	t.Helper()
+	return cp.runWith(t, o, branch, nil)
+}
+
+// runWith checkpoints o, storing the boot trace prefetch with the snapshot
+// if it is not nil.
+func (cp *checkpointer) runWith(t *testing.T, o *testOverlay, branch bool, prefetch []byte) (swarm.Address, error) {
+	t.Helper()
 	var log bytes.Buffer
-	snap, err := checkpoint(context.Background(), cp.c, cp.s, cp.keys, testBatch, o.path, branch, &log)
+	snap, err := checkpoint(context.Background(), cp.c, cp.s, cp.keys, testBatch, o.path, branch, prefetch, &log)
 	t.Log("\n" + log.String())
 	return snap, err
 }

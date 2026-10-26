@@ -125,7 +125,7 @@ records  repeated until EOF:
          count  uint32   number of consecutive blocks
 ```
 
-Records are in first-touch order and do not repeat a block. The engine prefetches them in order, with a bounded window ahead of the guest's current position in the trace.
+Records are in first-touch order and do not repeat a block. The engine prefetches them in order, with a bounded window ahead of the guest's current position in the trace. It records a trace from a guest's reads (`swarmblk serve -record`), and `swarmblk checkpoint -prefetch` stores one with the next snapshot; a checkpoint without one keeps its parent's trace, which names blocks by position and so still applies.
 
 ## 7. Feeds
 
