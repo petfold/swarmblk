@@ -2,146 +2,35 @@ package lineage
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethersphere/bee/v2/pkg/cac"
-	"github.com/ethersphere/bee/v2/pkg/feeds"
-	"github.com/ethersphere/bee/v2/pkg/feeds/sequence"
-	"github.com/ethersphere/bee/v2/pkg/soc"
-	"github.com/ethersphere/bee/v2/pkg/storage"
-	"github.com/ethersphere/bee/v2/pkg/storage/inmemchunkstore"
-	"github.com/ethersphere/bee/v2/pkg/swarm"
 
 	"github.com/petfold/swarmblk/internal/bee"
+	"github.com/petfold/swarmblk/internal/beetest"
 )
 
 const testBatch = "c7af5ddacf81eaa13304ea78b497c8d719b2f5c0bf53b8ab01654cb4c65edecb"
 
-// fakeBee serves feeds from an in-memory store as Bee does: GET /feeds finds
-// the head with Bee's sequence finder, GET /chunks returns stored chunks, and
-// POST /soc rebuilds and checks a single-owner chunk before storing it.
-// Chunks in hidden are not found, like updates Bee cannot retrieve yet.
-type fakeBee struct {
-	store *inmemchunkstore.ChunkStore
-
-	mu     sync.Mutex
-	hidden map[string]bool
-	posts  int
-}
-
-func newFakeBee(t *testing.T) (*fakeBee, *bee.Client) {
-	b := &fakeBee{store: inmemchunkstore.New(), hidden: map[string]bool{}}
-	srv := httptest.NewServer(b)
-	t.Cleanup(srv.Close)
-	return b, bee.New(srv.URL, 2)
-}
-
-func (b *fakeBee) get(ctx context.Context, addr swarm.Address) (swarm.Chunk, error) {
-	b.mu.Lock()
-	hidden := b.hidden[addr.ByteString()]
-	b.mu.Unlock()
-	if hidden {
-		return nil, storage.ErrNotFound
-	}
-	return b.store.Get(ctx, addr)
-}
-
-func (b *fakeBee) hide(t *testing.T, l Lineage, i uint64, hidden bool) {
-	t.Helper()
-	addr, err := l.Address(i)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.hidden[addr.ByteString()] = hidden
-}
-
-func notFound(w http.ResponseWriter, msg string) {
-	w.WriteHeader(http.StatusNotFound)
-	fmt.Fprintf(w, `{"code":404,"message":%q}`, msg)
-}
-
-func (b *fakeBee) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	switch {
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "feeds":
-		owner, _ := hex.DecodeString(parts[1])
-		topic, _ := hex.DecodeString(parts[2])
-		finder := sequence.NewFinder(storage.GetterFunc(b.get), feeds.New(topic, common.BytesToAddress(owner)))
-		ch, cur, _, err := finder.At(ctx, time.Now().Unix(), 0)
-		if err != nil || ch == nil {
-			notFound(w, "no update found")
-			return
-		}
-		i, _ := cur.MarshalBinary()
-		w.Header().Set("Swarm-Feed-Index", hex.EncodeToString(i))
-		w.Write(ch.Data())
-	case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "chunks":
-		ch, err := b.get(ctx, swarm.MustParseHexAddress(parts[1]))
-		if err != nil {
-			notFound(w, "chunk not found")
-			return
-		}
-		w.Write(ch.Data())
-	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "soc":
-		if r.Header.Get("Swarm-Postage-Batch-Id") != testBatch {
-			http.Error(w, "no batch", http.StatusBadRequest)
-			return
-		}
-		owner, _ := hex.DecodeString(parts[1])
-		id, _ := hex.DecodeString(parts[2])
-		sig, _ := hex.DecodeString(r.URL.Query().Get("sig"))
-		data, _ := io.ReadAll(r.Body)
-		wc, err := cac.NewWithDataSpan(data)
-		if err != nil {
-			http.Error(w, "chunk data error", http.StatusBadRequest)
-			return
-		}
-		s, err := soc.NewSigned(id, wc, owner, sig)
-		if err != nil {
-			http.Error(w, "invalid address", http.StatusUnauthorized)
-			return
-		}
-		ch, err := s.Chunk()
-		if err != nil || !soc.Valid(ch) {
-			http.Error(w, "invalid chunk", http.StatusUnauthorized)
-			return
-		}
-		b.store.Put(ctx, ch)
-		b.mu.Lock()
-		b.posts++
-		b.mu.Unlock()
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"reference":%q}`, ch.Address())
-	default:
-		notFound(w, "not found")
-	}
-}
-
 func TestPublish(t *testing.T) {
 	ctx := context.Background()
-	b, c := newFakeBee(t)
+	b := beetest.New(testBatch)
+	c := b.Client(t)
 	l, key := testLineage(t)
 	u0, u1, u2 := testUpdate(0), testUpdate(1), testUpdate(2)
 	posts := func(want int) {
 		t.Helper()
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if b.posts != want {
-			t.Errorf("%d updates posted, want %d", b.posts, want)
+		if n := len(b.Received()); n != want {
+			t.Errorf("%d updates posted, want %d", n, want)
 		}
+	}
+	hide := func(i uint64, hidden bool) {
+		t.Helper()
+		addr, err := l.Address(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Hide(addr, hidden)
 	}
 	head := func(want Update) {
 		t.Helper()
@@ -185,11 +74,11 @@ func TestPublish(t *testing.T) {
 	posts(2)
 
 	// Bee cannot find update 1 yet: the writer must wait.
-	b.hide(t, l, 1, true)
+	hide(1, true)
 	if err := Publish(ctx, c, testBatch, l, key, &u1, u2); !errors.Is(err, ErrNotHead) || !strings.Contains(err.Error(), "finds update 0") {
 		t.Errorf("with update 1 out of sight: %v, want ErrNotHead naming update 0", err)
 	}
-	b.hide(t, l, 1, false)
+	hide(1, false)
 	if err := Publish(ctx, c, testBatch, l, key, &u1, u2); err != nil {
 		t.Fatal(err)
 	}

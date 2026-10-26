@@ -58,6 +58,7 @@ cmd/chunkprobe/      Phase 0 latency probe
 tools/beeproxy/      Phase 0 logging proxy
 internal/tree/       geometry, paths, zero subtrees, rebuild, diff
 internal/bee/        minimal Bee HTTP client
+internal/beetest/    fake Bee node for unit tests
 internal/store/      content-addressed chunk store
 internal/snapshot/   manifest and meta.json
 internal/lineage/    lineage feed (registry in Phase 4)
