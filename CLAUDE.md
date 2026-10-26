@@ -11,7 +11,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 
 ## Where we are
 
-**Phase 2: the block engine over NBD,** started on 2026-10-26 after Phase 1's gate was met ([results](docs/results/phase1-gate-2026-10-26.md)). Phase 1 built the offline tools on `internal/tree`, `internal/store`, `internal/bee`, `internal/snapshot` and `internal/lineage`: `swarmblk import`, `checkpoint` (a stopped VM's qcow2 overlay into the next snapshot of a lineage), `restore`, `export` and `diff`. `internal/nbd` serves block devices over NBD with structured replies, block status, flush, FUA, trim and write-zeroes, tested against QEMU's client. `internal/engine` has the read path: a snapshot's disk read from its tree, with every intermediate chunk cached, zero subtrees answered without fetches and reported as holes, and parallel verified fetches through the local store. `swarmblk serve` exports a snapshot or a lineage's head read-only over NBD, and QEMU runs overlays on it. It records boot traces and prefetches from them ahead of the guest (SPEC §6): a cold boot of Alpine through a node that had never seen it took 3.5 minutes with its trace and 17–18 without ([results](docs/results/phase2-cold-2026-10-26.md)). A filesystem round trip (ext4 changed with debugfs, checkpointed, exported through another node, checked with e2fsck) passes. Next is the write path: write epochs (SPEC §11).
+**Phase 2: the block engine over NBD,** started on 2026-10-26 after Phase 1's gate was met ([results](docs/results/phase1-gate-2026-10-26.md)). Phase 1 built the offline tools on `internal/tree`, `internal/store`, `internal/bee`, `internal/snapshot` and `internal/lineage`: `swarmblk import`, `checkpoint` (a stopped VM's qcow2 overlay into the next snapshot of a lineage), `restore`, `export` and `diff`. `internal/nbd` serves block devices over NBD with structured replies, block status, flush, FUA, trim and write-zeroes, tested against QEMU's client. `internal/engine` has the read path: a snapshot's disk read from its tree, with every intermediate chunk cached, zero subtrees answered without fetches and reported as holes, and parallel verified fetches through the local store. `swarmblk serve` exports a snapshot or a lineage's head read-only over NBD, and QEMU runs overlays on it. It records boot traces and prefetches from them ahead of the guest (SPEC §6): a cold boot of Alpine through a node that had never seen it took 3.5 minutes with its trace and 17–18 without ([results](docs/results/phase2-cold-2026-10-26.md)). A filesystem round trip (ext4 changed with debugfs, checkpointed, exported through another node, checked with e2fsck) passes. The write path is in: `internal/epoch` keeps a disk's writes in a checksummed, crash-recoverable log (SPEC §11), `engine.Disk` puts it on top of a snapshot, and `swarmblk serve -disk NAME` serves the disk writable, so a VM runs straight on it. Next are live checkpoints: turning an epoch into the next snapshot from an atomic cut.
 
 ## Hard rules
 
@@ -64,7 +64,8 @@ internal/store/      content-addressed chunk store
 internal/snapshot/   manifest and meta.json
 internal/lineage/    lineage feed (registry in Phase 4)
 internal/nbd/        NBD server (Phase 2)
-internal/engine/     block engine: read path so far (Phase 2)
+internal/engine/     block engine: snapshots read-only, disks writable (Phase 2)
+internal/epoch/      write epochs: the local write log (Phase 2)
 docs/                DESIGN, SPEC, PHASE0, results/
 ```
 

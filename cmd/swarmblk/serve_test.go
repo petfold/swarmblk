@@ -217,3 +217,61 @@ func TestServeTrace(t *testing.T) {
 		t.Error("serve took a bad trace")
 	}
 }
+
+// TestServeDisk writes to a disk served writable, restarts serve, and reads
+// the writes back from the recovered epoch.
+func TestServeDisk(t *testing.T) {
+	needQEMU(t)
+	ctx := context.Background()
+	cp := newCheckpointer(t)
+	snap0, img := cp.importDisk(t)
+	disks := filepath.Join(t.TempDir(), "disks")
+	uri, stop := cp.startServeWith(t, serveConfig{disk: "vm", arg: snap0.String(), disks: disks})
+	if !strings.HasPrefix(uri, "nbd+unix:///vm?socket=") {
+		t.Errorf("URI %q", uri)
+	}
+	run(t, "qemu-io", "-f", "raw", "-c", "write -P 0x61 0 64k", "-c", "write -P 0x62 1M 512", "-c", "write -z 2M 64k",
+		"-c", "discard 4M 8k", "-c", "write -f -P 0x63 63M 4k", "-c", "flush", uri)
+	if err, log := stop(); err != nil || !strings.Contains(log, "disk vm is new") || !strings.Contains(log, "writable, epoch 1 holding 0 blocks") {
+		t.Fatalf("serve ended with %v:\n%s", err, log)
+	}
+	want := bytes.Clone(img)
+	for _, w := range []struct {
+		off, n int
+		v      byte
+	}{{0, 64 << 10, 0x61}, {1 << 20, 512, 0x62}, {2 << 20, 64 << 10, 0}, {4 << 20, 8 << 10, 0}, {63 << 20, 4 << 10, 0x63}} {
+		copy(want[w.off:], bytes.Repeat([]byte{w.v}, w.n))
+	}
+
+	uri, stop = cp.startServeWith(t, serveConfig{disk: "vm", disks: disks})
+	if !bytes.Equal(readAll(t, "raw", uri), want) {
+		t.Error("the restarted disk reads different from what was written")
+	}
+	sock := filepath.Join(t.TempDir(), "again.sock")
+	if err := serve(ctx, cp.c, newStore(t), serveConfig{disk: "vm", disks: disks, sock: sock}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "in use") {
+		t.Errorf("a second serve of the same disk: %v", err)
+	}
+	if err, log := stop(); err != nil || !strings.Contains(log, "writable, epoch 1 holding") {
+		t.Errorf("serve ended with %v:\n%s", err, log)
+	}
+
+	other := cp.importBytes(t, make([]byte, 64<<20))
+	for name, c := range map[string]struct {
+		cfg  serveConfig
+		want string
+	}{
+		"another snapshot": {serveConfig{disk: "vm", arg: other.String(), disks: disks}, "is on snapshot"},
+		"a new disk alone": {serveConfig{disk: "fresh", disks: disks}, "is new"},
+		"a bad name":       {serveConfig{disk: "../vm", arg: snap0.String(), disks: disks}, "disk name"},
+	} {
+		c.cfg.sock = filepath.Join(t.TempDir(), "x.sock")
+		if err := serve(ctx, cp.c, newStore(t), c.cfg, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want an error about %q", name, err, c.want)
+		}
+	}
+	uri, stop = cp.startServeWith(t, serveConfig{disk: "vm", arg: snap0.String(), disks: disks})
+	if !bytes.Equal(readAll(t, "raw", uri), want) {
+		t.Error("naming the disk's own snapshot changed what it reads")
+	}
+	stop()
+}

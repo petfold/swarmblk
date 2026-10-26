@@ -6,7 +6,7 @@
 //	swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
 //	swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
 //	swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
-//	swarmblk serve [-bee url] [-home dir] [-socket path] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
+//	swarmblk serve [-bee url] [-home dir] [-socket path] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root | -disk name [lineage|snapshot]
 //
 // import uploads a raw disk image as a format-1 tree (SPEC §2) in a first
 // snapshot. checkpoint turns a stopped VM's qcow2 overlay into the next
@@ -19,7 +19,9 @@
 // a root, read-only over NBD on a Unix socket, through the engine (DESIGN
 // §3), and prints the URI for QEMU. It prefetches from the snapshot's boot
 // trace and can record a new one, which checkpoint -prefetch stores with the
-// next snapshot (SPEC §6). A lineage is given as 0x<owner>/<topic>
+// next snapshot (SPEC §6). With -disk it serves a named disk writable
+// instead, keeping its writes in a write epoch in the local state directory
+// (SPEC §11). A lineage is given as 0x<owner>/<topic>
 // and stands for its latest snapshot. The defaults come from
 // $SWARMBLK_BEE_URL, $SWARMBLK_BATCH and $SWARMBLK_HOME.
 package main
@@ -62,7 +64,7 @@ func usage() {
   swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
   swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
   swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
-  swarmblk serve [-bee url] [-home dir] [-socket path] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
+  swarmblk serve [-bee url] [-home dir] [-socket path] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root | -disk name [lineage|snapshot]
 `)
 	os.Exit(2)
 }

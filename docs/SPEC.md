@@ -194,15 +194,18 @@ Under `$SWARMBLK_HOME` (default `~/.local/share/swarmblk`), mode 0700:
 |---|---|
 | `chunks/` | content-addressed chunk store: tree cache (all intermediates of known snapshots) and chunk cache (leaves), verified on write |
 | `state.db` | embedded key-value store (e.g. bbolt): lineages (id, owner, topic, head index, head manifest), batches (id, bound host, depth, TTL forecast, fullest bucket), coverage (address → batch ids), epochs (Phase 2) |
+| `disks/` | writable disks, each a directory of write epochs (§11) |
 | `keys/` | lineage keys, one file `<owner>.key` each, holding the private key in hex, mode 0600; never logged or committed. A key file that other users can read is refused |
 
-## 11. Write epochs (draft, Phase 2)
+## 11. Write epochs (Phase 2)
 
-- Append-only data segments of 4 KiB blocks, plus an index of block → (segment, offset, CRC32C).
-- Partial-write records as in §4.
-- Superblock: epoch number, parent snapshot root, state (`active`, `frozen`, `uploading`, `retired`).
-- A guest FLUSH or FUA write completes only after data and index are fsynced.
-- Recovery replays the index and drops records after the last good checksum.
+A writable disk keeps the blocks written since its last snapshot in a write epoch, a directory `$SWARMBLK_HOME/disks/<name>/<n>` for epoch *n*:
+
+- `super.json`: `format` (`swarmblk-epoch/1`), `epoch`, `parent` (the snapshot's manifest), `disk_root`, `size`, and `state`: `active`, `frozen`, `uploading` or `retired`. It is replaced atomically.
+- `data`: the written bytes, appended.
+- `index`: 36-byte little-endian records, appended after their data: kind (1 byte: 1 a whole block, 2 a block of zeros with no data, 3 a patch), 3 zero bytes, `pos` (uint32, a patch's offset in the block), `length` (uint32: 4096, 0, or a patch's length), `block` (uint64), `offset` (uint64, where the data starts in `data`), the data's CRC32C (uint32), and the CRC32C of the 32 bytes before it (uint32).
+
+Reads take a block's latest whole record, or else its contents in the snapshot, and apply the patches after it in order. A write covering part of a block is recorded whole when the block's contents are at hand, and as a patch otherwise (§4); a whole block of zeros, a discard and a zero-write are zero blocks. A guest FLUSH, or a write with FUA, completes only after `data` and then `index` are fsynced, so a durable record never points at data that is not. Recovery replays the index and drops the first record whose checksum, data or position fails, and everything after it, then truncates both files. An open epoch holds an exclusive `flock` on its index, so no second process writes it.
 
 ## 12. Disk card (draft, Phase 2)
 
