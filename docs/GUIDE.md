@@ -317,6 +317,48 @@ disk vm1: hydrated, all 32768 blocks local; … fetched in …
 
 From then on the disk starts and runs even with Bee unreachable; only checkpoints need Bee. Checkpoints keep the copy up to date, so nothing is fetched twice. The disk remembers its policy, and `-policy lazy` deletes the copy.
 
+**Bring back the whole machine with a disk card.** The commands above bring back the disk. A **disk card** brings back the machine: a small file that names the disk's lineage and holds what QEMU needs to run it, such as its memory and network card, and its firmware settings and TPM, if it has them. Describe the machine in a file, `vm.json`:
+
+```json
+{"memory": 512, "nic": {"model": "virtio-net-pci"}}
+```
+
+and make the card on the first computer:
+
+```sh
+swarmblk card -disk vm1 -vm vm.json
+```
+
+```
+card: uploading the machine's definition, 1 chunks
+upload: 1 chunks stored under tag 731825 in 0s; waiting for sync
+sync: 1 of 1 synced after 5s
+card: machine vm1, following lineage 0x1bc0467a…/219d107a… from update 2, snapshot 3cd3aa9c…
+vm1.card
+```
+
+The card follows the lineage, so it stays good as you take more snapshots; make a new one when the machine's description changes. Keep it off this computer, somewhere safe, such as a password manager: it is all a second computer needs, and whoever holds it can start the machine. On the second computer, with a batch of its own in `SWARMBLK_BATCH`:
+
+```sh
+swarmblk boot vm1.card -- -drive file=seed.img,if=virtio,format=raw,readonly=on
+```
+
+`boot` makes the disk on the lineage's latest snapshot, with the `hydrate` policy, and runs the machine in your terminal. Anything after `--` goes to QEMU, here the seed. When the machine shuts down, boot takes a checkpoint. It starts a new lineage, since the lineage's key stays on the first computer:
+
+```
+lineage 0x1bc0467a…/219d107a…: the head is update 2, snapshot 3cd3aa9c…
+disk vm1: new, on snapshot 3cd3aa9c…
+serve: a 128 MiB disk, writable, epoch 1 holding 0 blocks, on snapshot 3cd3aa9c…, policy hydrate, as vm1
+boot: qemu-system-x86_64 -name vm1 -machine q35 -accel kvm -cpu host -smp 1 -m 512 …
+disk vm1: hydrated, all 32768 blocks local; 11765 fetched in 2s
+boot: the machine stopped after 14s
+boot: checkpointing disk vm1
+…
+lineage 0x02422cf5…/7d0a4187…: update 0 is snapshot 1978769f…
+```
+
+Run the same command again to carry on with the disk as the machine left it. For a machine with UEFI firmware or a TPM, give `card` its firmware settings with `-nvram` and its TPM with `-vtpm` ([reference](REFERENCE.md#card)).
+
 Bee finds a lineage's latest update by asking the network. Right after a checkpoint it may still find the one before for a minute or so, as in the export above, which ran just after update 2 was published. A snapshot's reference never changes, so use it when you need that exact snapshot.
 
 **One writer per lineage.** Swarm has no locks, so if two computers published to the same lineage, each would overwrite the other's history. swarmblk keeps each lineage's key on the computer that created it, in `~/.local/share/swarmblk/keys`. Back that folder up, keep it private, and never copy a key to a second computer to run both at once.
@@ -414,7 +456,8 @@ curl -s -X PATCH $SWARMBLK_BEE_URL/stamps/topup/$SWARMBLK_BATCH/$AMOUNT
 - **Snapshots are public.** They are not encrypted, and a reference or lineage address is all it takes to read the whole disk. Encrypt inside the machine, for example with LUKS full-disk encryption, if you need privacy.
 - **Keys are the lineage.** Without a lineage's key, you can still read and branch it, but not add to it. Back up `~/.local/share/swarmblk/keys`.
 - **Data lasts as long as its postage.** When a batch runs out, Swarm may drop its chunks.
-- **There is no failure handling yet.** If Swarm cannot deliver a block, the machine's read fails as if the disk were broken.
+- **If Swarm cannot deliver a block,** the machine waits for it and seems to freeze, and `serve` prints an `ALARM` line every minute until the block arrives. `serve -alarm` also runs a command of yours, such as one that sends you a message, and `-failure error` makes such reads fail instead.
+- **Disk cards are keys.** Whoever holds a card can start the machine and read what its TPM keeps. Store cards like passwords.
 
 ## 13. When something goes wrong
 
@@ -430,6 +473,8 @@ curl -s -X PATCH $SWARMBLK_BEE_URL/stamps/topup/$SWARMBLK_BATCH/$AMOUNT
 | `checkpoints need a batch to stamp with` | No batch was given | Set `SWARMBLK_BATCH`, or pass `-batch` |
 | `Failed to get shared "write" lock` | The overlay's machine is still running | Shut it down, then checkpoint |
 | `lineage …: not the lineage's head: …` | Bee does not see the latest update yet, or the lineage moved on | Try again in a minute, or use `-branch` |
+| `serve: disk vm1: ALARM: block … cannot be fetched from Swarm: …` | Swarm cannot deliver a block the machine needs, and the machine waits for it | Check that Bee runs and has peers, and that the batch is funded; the machine carries on when the block arrives |
+| `lineage …: the head reads as update …, older than the card's update …` | Bee has not found the lineage's latest update yet | Try `boot` again in a minute |
 
 **The machine starts slowly** on a computer that has not seen the disk before: record and use a boot trace (section 8).
 
@@ -440,7 +485,7 @@ All its local state is in `~/.local/share/swarmblk`, or wherever `SWARMBLK_HOME`
 | Path | Holds |
 |---|---|
 | `chunks/` | a cache of the chunks swarmblk has handled, checked against their addresses; `serve` keeps it under 4 GiB, or the size `-cache` gives; safe to delete while nothing runs |
-| `disks/<name>/` | a writable disk's writes since its last snapshot, and its local copy if it has one; deleting it loses the writes |
+| `disks/<name>/` | a writable disk's writes since its last snapshot, its local copy if it has one, and the settings of a machine that `boot` runs; deleting it loses the writes |
 | `keys/` | your lineage keys; back it up |
 | `nbd.sock` | where `serve` listens unless told otherwise |
 
@@ -457,6 +502,7 @@ All its local state is in `~/.local/share/swarmblk`, or wherever `SWARMBLK_HOME`
 | epoch | the writes a disk has collected on your computer since its last cut |
 | checkpoint | turning the writes since the last snapshot into the next one |
 | boot trace | the blocks a boot reads, for fetching them ahead of time |
+| disk card | a small, secret file that brings a whole machine back from Swarm |
 | postage batch | prepaid storage that stamps uploads |
 | Bee | the program that connects a computer to Swarm |
 | NBD | the protocol QEMU uses to reach the engine |

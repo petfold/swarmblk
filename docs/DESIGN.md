@@ -90,7 +90,7 @@ The engine's read rules:
   - *re-stamp only:* fetch each live chunk once to stamp it under the host's own batch, then discard it (§5).
 
   Lazy suits golden images, CI and forensics, where most blocks are never read. Hydrate suits disaster-recovery restores that must outlive a network outage or an expired batch: a CirrOS disk hydrated through node A then booted with no Bee running at all, and its checkpoints caught up when Bee came back.
-- **Fail visibly.** When retries run out, the engine either blocks the guest or returns an I/O error. ext4 remounts read-only on the first error, so the default is to block and raise an alarm.
+- **Fail visibly.** When a fetch's retries run out, the engine either blocks the read or returns an I/O error. ext4 remounts read-only on the first error, so the default is to block: the read tries again after 1, 2, 4 … and at most 30 seconds, until Swarm delivers or the guest's client goes. The guest sees a slow disk. serve raises an alarm when the first read starts waiting, in its log and through an optional command, repeats it every minute, and clears it when reads go through again.
 
 Erasure coding protects availability, not random-read latency: at the medium level, rebuilding one missing 4 KiB block takes 119 other chunks of its group. It pays off in sequential reads and hydration, where the whole group is read anyway.
 
@@ -191,7 +191,7 @@ A lineage has one writer at a time, set by who holds its feed key; anything that
 - **Handoff** (planned move): host A pauses, publishes a final snapshot and seals its lineage. The registry then names a lineage owned by host B, starting from A's final snapshot, and B stamps with its own batches.
 - **Takeover** (host A died): power-fence host A, then point the registry at a new lineage from A's last published snapshot. Writes after that snapshot are lost; that is the recovery point.
 - **Fencing:** before each publish, a writer checks that the registry still names its lineage and stops if not. A race can still leave an orphaned snapshot, but the registry decides which lineage is current. Strong fencing would need an on-chain register, which is not planned.
-- **Restore anywhere:** a signed, secret disk card — registry address, disk key or ACT reference, batch IDs — restores from the bare network, like wintercluster's recovery cards. For disaster recovery it also carries the VM definition, UEFI variables and vTPM state; without them, TPM-sealed disks will not unlock.
+- **Restore anywhere:** a secret disk card — lineage, snapshot, batch IDs, and the machine's definition, UEFI variables and vTPM state — restores from the bare network, like wintercluster's recovery cards. Without the vTPM state, TPM-sealed disks will not unlock. The machine's files go to Swarm under Bee's chunk encryption, so the card holds their keys and must be kept like a private key. It holds no lineage key: a machine booted from it writes a new lineage on the old one's head, and taking the old lineage over waits for the registry (Phase 4), as do the registry address and the disk key.
 
 Read-only consumers are unlimited. Shared writable disks stay out of scope: block devices cannot merge, and cluster filesystems need one coherent shared device.
 
@@ -216,7 +216,7 @@ flowchart TD
 ```
 
 - **VMs through NBD.** QEMU's block drivers live inside the QEMU tree, so a custom one means patching QEMU. QEMU's built-in NBD client already uses NBD block status, so an external server reaches VMs unchanged.
-- **Host block devices through kernel NBD now, ublk later.** ublk (io_uring, Linux 6.0+) is faster. Both can deadlock under memory pressure if the engine or Bee needs memory to finish writeback, so mark both processes with `PR_SET_IO_FLUSHER`, lock their memory and never swap onto the device.
+- **Host block devices through kernel NBD now, ublk later.** ublk (io_uring, Linux 6.0+) is faster. Both can deadlock under memory pressure if the engine or Bee needs memory to finish writeback, so mark both processes with `PR_SET_IO_FLUSHER`, lock their memory and never swap onto the device. `serve -iolock` does both for the engine. `swarmblk iolock -- bee start` marks Bee, but memory locks end at exec, so Bee's service manager must protect its memory, such as with systemd's `MemoryMin=`. VMs need neither, since QEMU's NBD client runs in user space.
 - **vhost-user-blk** is the later path to VM-grade performance.
 - **Bare metal** needs a node before the operating system runs. An initramfs can start Bee and the engine and mount the root disk over NBD (dracut has an NBD root module); [deboot](https://debootdevs.github.io/deboot/) already starts Bee in an initramfs, to download a read-only squashfs root. Or a server on the local network exports the disk to a machine that boots with iPXE.
 - **Write the engine in Go.** It can import Bee's own BMT, CAC, splitter, Mantaray, feeds and SOC packages (`github.com/ethersphere/bee/v2/pkg/...`), so trees match Bee's byte for byte. Ethersphere's beekeeper imports Bee the same way.
@@ -290,6 +290,11 @@ Decisions:
 | 2026-10-26 | At most one frozen epoch, which records its snapshot once uploaded | A stopped checkpoint resumes by publishing, not uploading again; reads look through at most two epochs | A queue of frozen epochs |
 | 2026-10-26 | A hydrating disk keeps a sparse image file and a block map, which checkpoints move on with their blocks | A full copy must outlive the cache's bound and the network; pinning its chunks in the shared store would mean tracking millions of addresses | Pinned chunks in the chunk store |
 | 2026-10-26 | The chunk cache is bounded, 4 GiB by default, by removing the leaves used least recently; writers hold it until their uploads sync | Leaves can always be fetched again, while the tree makes every cold read one fetch, and unsynced chunks exist nowhere else | An unbounded cache; evicting tree chunks too |
+| 2026-10-27 | A read that Swarm cannot serve waits and retries, backing off to 30 s, and raises an alarm; `serve -failure error` returns I/O errors instead | ext4 remounts read-only on the first I/O error, and most guests ride out a slow disk; the alarm makes the wait visible | I/O errors by default; a timeout that turns the wait into an error |
+| 2026-10-27 | `serve -iolock` sets `PR_SET_IO_FLUSHER` and locks memory only when asked, and starts itself again so that every thread has the flag | Only a host whose kernel mounts the disk can deadlock in writeback; the flag belongs to a thread, and Go starts threads before `main` | Always on, which needs capabilities for every use |
+| 2026-10-27 | Disk cards are unsigned JSON; the machine's files use Bee's chunk encryption, whose references hold the keys | The card is the restorer's root of trust, so a signature checked against a key it names proves nothing; all it names is content-addressed or signed by the lineage key; no new cryptography, and any Swarm tool reads the files with the card | Signing with the lineage key; AES-GCM under a separate key; wrapping keys in a passphrase, left for Phase 4 |
+| 2026-10-27 | A card holds no lineage key; a machine booted from it starts a new lineage on the old one's head | One writer per lineage: a card used while its first host still runs must not make a second writer | Carrying the key for takeovers, which the registry will do (Phase 4) |
+| 2026-10-27 | `swarmblk boot` runs a card's machine with QEMU from a small VM definition, on a new disk that hydrates | A recovery must not depend on the dead host's libvirt or scripts; a hydrated disk outlives the network | libvirt domain XML; raw QEMU command lines |
 
 ## 13. References
 

@@ -2,7 +2,7 @@
 
 Each phase ends at a gate that decides whether the next is worth building. Phase 0 is days of work, not weeks. Details: [docs/DESIGN.md](docs/DESIGN.md), [docs/SPEC.md](docs/SPEC.md).
 
-**Current phase: 1.**
+**Current phase: 2.**
 
 ## Phase 0 — Measure with stock tools
 
@@ -52,11 +52,11 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - [x] Filesystem round trip without root or a VM: an ext4 image built with `mkfs.ext4 -d`, changed with `debugfs`, checkpointed, and exported on another node; `e2fsck -fn` must be clean and every file's checksum equal (`TestFilesystem`, and `TestLiveFilesystem` through node B)
 - [x] Crash consistency with a real guest: files written with checksums and `fsync`, QEMU killed at random points, the overlay checkpointed and restored on another node; `fsck` must be clean and every file that was `fsync`ed intact, over many runs. With the guest's own driver writing, the same workload on ext4, XFS, Btrfs and ZFS compares what checkpoints upload (DESIGN §9), and so what a native ZFSwarm would save. `tools/crashtest` killed QEMU or the engine under a writable disk 80 times and checked 24 snapshots through node B, on all four filesystems, without losing an fsynced operation. For the same workload, XFS uploaded 1.2 times the data written, ext4 2.2, ZFS 2.3 and Btrfs 3.5 ([results](docs/results/phase2-crash-2026-10-26.md))
 - [x] Live checkpoints from an atomic cut; guest-agent freeze for application consistency: `serve -disk` checkpoints the disk every `-every` or when `checkpoint -disk` asks, freezing the guest's filesystems with `-qga` (SPEC §8). A checkpoint taken while CirrOS wrote was crash-consistent, and the last one matched the disk byte for byte ([results](docs/results/phase2-live-2026-10-26.md)). With Ubuntu's real agent, the frozen snapshot's ext4 needed no journal recovery ([results](docs/results/phase2-qga-2026-10-26.md))
-- [ ] Failure policy: block the guest and raise an alarm after retries
-- [ ] `PR_SET_IO_FLUSHER` and locked memory for the engine and Bee
-- [ ] Disk card with VM definition, UEFI variables and vTPM state (SPEC §12)
+- [x] Failure policy: block the guest and raise an alarm after retries: `serve -failure block`, the default, makes a read that Swarm cannot serve wait and retry, backing off to 30 s, and raises an alarm in serve's log and through `-alarm`; `-failure error` returns I/O errors
+- [x] `PR_SET_IO_FLUSHER` and locked memory for the engine and Bee: `serve -iolock`, and `swarmblk iolock -- bee start`, for hosts whose kernel mounts a disk. Only the refusal without capabilities is tested here; the rest needs root
+- [x] Disk card with VM definition, UEFI variables and vTPM state (SPEC §12): `swarmblk card` and `swarmblk boot`. A rehearsal of the gate on one laptop killed the machine's host and booted it from its card in a fresh state directory, with every write of its last checkpoint, and booted a UEFI card ([results](docs/results/phase2-dr-2026-10-27.md)). The vTPM path is tested against a fake swtpm only
 
-**Gate:** a disaster-recovery drill — kill a host, then boot its VM on another machine from the disk card.
+**Gate:** a disaster-recovery drill — kill a host, then boot its VM on another machine from the disk card. Rehearsed on one laptop; the drill itself needs a second machine with QEMU, and swtpm for a vTPM.
 
 ## Phase 3 — Retention manager
 

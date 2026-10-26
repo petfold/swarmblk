@@ -12,6 +12,9 @@ This manual describes every swarmblk command, option, file and message, as of Ph
 | [`restore`](#restore) | makes a qcow2 overlay that reads a snapshot from Bee over HTTP |
 | [`export`](#export) | writes a snapshot's disk to a raw image file |
 | [`diff`](#diff) | lists the blocks that differ between two snapshots |
+| [`card`](#card) | makes a disk card, which restores a machine from the bare network |
+| [`boot`](#boot) | runs a disk card's machine with QEMU, on a writable disk |
+| [`iolock`](#iolock) | runs a command, such as Bee, as an I/O flusher |
 
 ## Conventions
 
@@ -28,7 +31,7 @@ Commands that upload also take `-batch id`, by default `$SWARMBLK_BATCH`: the [p
 
 **Disk names** are letters, digits, dots, dashes and underscores, starting with a letter or digit.
 
-**Output.** A command's result goes to standard output as one line: a snapshot reference, or for `serve` an NBD URI. Progress and errors go to standard error, errors prefixed `swarmblk:`. The exit status is 0 on success, 1 on an error, and 2 for a usage error, after which the usage is printed.
+**Output.** A command's result goes to standard output as one line: a snapshot reference, for `serve` an NBD URI, and for `card` the card's file name. `boot` gives standard output to QEMU. Progress and errors go to standard error, errors prefixed `swarmblk:`. The exit status is 0 on success, 1 on an error, and 2 for a usage error, after which the usage is printed.
 
 **Blocks.** Disks are divided into 4 KiB blocks, numbered from 0. Each block is one Swarm chunk; a block of zeros is the shared zero chunk and costs nothing.
 
@@ -83,12 +86,15 @@ The export is named after the snapshot's reference, the root, or the disk's name
 | `-nocache` | off | ask Bee not to cache what it retrieves (`Swarm-Cache: false`), so that measurements stay cold |
 | `-cache size` | `4G` | bound the local chunk cache: at start and every 5 minutes, remove the leaves used least recently; `0` for no bound. Sizes take `K`, `M`, `G` or `T` |
 | `-policy policy` | the disk's own, else `lazy` | the disk's [hydration policy](#hydration-policies): `lazy`, `hydrate` or `restamp`; it is recorded with the disk |
+| `-failure policy` | `block` | when Swarm cannot deliver a block: `block` the read and raise an alarm, or return an I/O `error` ([Failures](#failures)) |
+| `-alarm command` | none | a shell command to run when an alarm is raised or cleared ([Failures](#failures)) |
+| `-iolock` | off | run as an I/O flusher with locked memory, for a host whose kernel mounts the disk ([iolock](#iolock)) |
 
 `-every`, `-qga` and `-policy` need `-disk`, and `-every` needs a batch. serve refuses a socket that another server listens on, and replaces one that nobody does.
 
 **The NBD export.** Fixed-newstyle handshake, structured replies, and block status through the `base:allocation` context, with zero blocks reported as holes. Block sizes: 512 bytes minimum, 4096 preferred, 32 MiB the largest request. Flush and FUA are supported. A writable export also takes trim and write-zeroes; a read-only one refuses writes.
 
-**Reads.** serve fetches each 4 KiB chunk from Bee once, up to 64 at a time, checks it against its address, and keeps it in the local chunk store. It keeps every intermediate chunk of the tree in memory, and answers zero subtrees without fetching. A failed fetch is tried four times in all, after 0.5, 1 and 2 s; a chunk that fails its check is not tried again. A read that still fails returns an I/O error to the guest.
+**Reads.** serve fetches each 4 KiB chunk from Bee once, up to 64 at a time, checks it against its address, and keeps it in the local chunk store. It keeps every intermediate chunk of the tree in memory, and answers zero subtrees without fetching. A failed fetch is tried four times in all, after 0.5, 1 and 2 s; a chunk that fails its check is not tried again. A read that still fails waits and tries again, or fails, as `-failure` says ([Failures](#failures)).
 
 **Prefetch.** If the snapshot carries a boot trace, or `-prefetch` names one, serve fetches its blocks in trace order in the background, at most `-window` blocks ahead of the furthest trace block the guest has read, with up to half of the 64 fetches.
 
@@ -186,6 +192,127 @@ Prints the blocks whose contents differ between two snapshots' disks, one run pe
 diff: 6638 blocks (26552 KiB) in 123 runs differ between snapshots 9c7a4d0b… and 3cd3aa9c…
 ```
 
+## card
+
+```
+swarmblk card [-bee url] [-batch id] [-home dir] [options] -disk name | lineage | snapshot
+```
+
+Makes a **disk card**, a small JSON file that restores a machine from the bare network ([Disk cards](#disk-cards)), and prints its file's name. The card names the disk's lineage or snapshot, and the machine's definition, UEFI variables and TPM state, which card uploads encrypted, stamped with the batch, and waits until Bee has synced.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `-disk name` | | the card is for this writable disk, and follows the lineage its checkpoints continue |
+| `-name name` | the disk's name | the machine's name, which `boot` gives its disk |
+| `-vm file` | the disk's `vm/vm.json` | the [VM definition](#vm-definitions) |
+| `-nvram file` | the disk's `vm/nvram.fd`, if any | the machine's UEFI variables, such as libvirt's `/var/lib/libvirt/qemu/nvram/<machine>_VARS.fd` |
+| `-vtpm dir` | the disk's `vm/tpm`, if any | the machine's swtpm state directory, such as libvirt's `/var/lib/libvirt/swtpm/<uuid>/tpm2` |
+| `-o file` | `<name>.card` | where to write the card, mode 0600 |
+
+The defaults in the disk's `vm/` directory are what [`boot`](#boot) left there, so a machine that boot runs needs only `swarmblk card -disk name`.
+
+**What the card follows.** Given a lineage, the card follows it from its head. Given a snapshot, it stays on that snapshot. Given `-disk`, it follows the disk's lineage if this host holds the lineage's key; otherwise the disk's next checkpoint starts a lineage, and the card stays on the disk's snapshot until it is made again after that checkpoint:
+
+```
+card: disk vm1 sits on snapshot …, in no lineage this host writes, so the card stays on it; its next checkpoint starts a lineage, and a card made after that follows it
+```
+
+A card that follows a lineage stays good as the disk moves on: boot takes the lineage's head. Make a new card when the machine's definition, firmware settings or TPM state change, ideally while the machine is stopped, since card copies the files as they are. Progress:
+
+```
+card: uploading the machine's definition, UEFI variables, 137 chunks
+upload: 137 chunks stored under tag 731824 in 0s; waiting for sync
+sync: 137 of 137 synced after 5s
+card: machine dr-uefi, following lineage 0xcdfeac70…/cab06b02… from update 1, snapshot 2a3e915e…
+```
+
+Without UEFI variables a UEFI machine starts from the firmware's defaults, and without TPM state a machine gets a new TPM, which cannot unseal what the old one sealed; card warns of both. **Keep cards private and offline, like keys:** whoever holds one can boot the machine and read its TPM's secrets.
+
+## boot
+
+```
+swarmblk boot [-bee url] [-home dir] [options] card [-- qemu-arguments]
+```
+
+Runs a disk card's machine with QEMU until the machine stops, on a writable disk that boot serves itself. Arguments after the card, after `--`, go to QEMU last, such as `-drive file=seed.img,if=virtio,format=raw,readonly=on` or `-vnc :1`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `-disk name` | the card's name | the writable disk to run the machine on |
+| `-snapshot snapshot\|lineage` | the card's | where a new disk starts, instead of the card's lineage head or snapshot |
+| `-policy policy` | the disk's own, `hydrate` for a new disk | the disk's [hydration policy](#hydration-policies) |
+| `-batch id` | `$SWARMBLK_BATCH` | the batch that the disk's checkpoints stamp with; without one, there are none |
+| `-every interval` | off | checkpoint the disk at this interval, as serve does |
+| `-cache size`, `-failure policy`, `-alarm command` | as for serve | as for [serve](#serve) |
+| `-qemu binary` | `qemu-system-<arch>` | QEMU, for the definition's `arch` |
+| `-firmware file` | OVMF's | UEFI firmware code, for a UEFI machine |
+| `-swtpm binary` | `swtpm` | swtpm, for a machine with a TPM |
+| `-display how` | `serial` | `serial`: the machine's serial console on this terminal, through QEMU's `-nographic`; otherwise a QEMU `-display` value, such as `gtk`, `vnc=:1` or `none` |
+| `-nic backend` | `user` | QEMU's network backend for the machine's NIC: `user` is QEMU's own NAT; a bridge is `bridge,br=br0` |
+
+In turn, boot:
+
+1. reads the card, and fetches and decrypts the VM definition;
+2. makes the disk, if it is new, on the head of the card's lineage, which must be at the card's update or later, or on the card's snapshot; a disk that exists runs as it is, with the writes it holds;
+3. writes the machine's UEFI variables and TPM state to the disk's `vm/` directory from the card, the first time only, since the machine changes them as it runs. A UEFI machine without variables starts from OVMF's template, and a machine with a TPM but no state gets a new TPM;
+4. serves the disk on `disks/<name>/nbd.sock`, as `serve -disk` would, and starts swtpm for a TPM;
+5. runs QEMU, with its console and messages on boot's standard output and error. boot's own messages, and serve's, go to standard error;
+6. when the machine stops by itself and boot has a batch, checkpoints the disk.
+
+On SIGINT or SIGTERM, boot presses the machine's power button through QEMU's monitor, waits up to 2 minutes for it to shut down, and then stops QEMU. A disk from a card starts a new lineage at its first checkpoint, since the card holds no lineage key. A UEFI machine needs OVMF (Ubuntu's `ovmf` package): boot looks for it in `/usr/share/OVMF`, `/usr/share/edk2/ovmf`, `/usr/share/edk2/x64` and `/usr/share/qemu`, and takes the build whose variables have the size of the machine's. A machine with a TPM needs swtpm (Ubuntu's `swtpm` package).
+
+The QEMU command line comes from the [VM definition](#vm-definitions):
+
+| From | QEMU arguments |
+|---|---|
+| always | `-name`, `-machine`, `-accel kvm` with `-cpu host` where KVM can run the machine, else `-accel tcg` with `-cpu max`, `-smp`, `-m`, and `-qmp unix:vm/qmp.sock,server=on,wait=off` |
+| `firmware: "uefi"` | `-drive if=pflash` for the firmware code, read-only, and for `vm/nvram.fd` |
+| `secure_boot` | `smm=on` on the machine, and `-global driver=cfi.pflash01,property=secure,value=on` |
+| `disk` | the NBD export as drive `disk0`, with `discard=unmap,detect-zeroes=unmap`, on `virtio-blk-pci`, on `scsi-hd` behind `virtio-scsi-pci`, or on `ide-hd` for SATA; first in the boot order |
+| `nic` | `-nic <backend>,model=…,mac=…`, or `-nic none` |
+| `tpm` | `-chardev socket` to swtpm's `vm/swtpm.sock`, `-tpmdev emulator`, and the TPM device |
+| `agent` | the guest agent's channel on `vm/qga.sock`, which boot's checkpoints use to freeze the guest |
+| `args` | appended, then boot's own QEMU arguments |
+
+From the rehearsal ([results](results/phase2-dr-2026-10-27.md)):
+
+```
+lineage 0xcdfeac70…/cab06b02…: the head is update 1, snapshot 2a3e915e…
+disk dr: new, on snapshot 2a3e915e…
+serve: a 128 MiB disk, writable, epoch 1 holding 0 blocks, on snapshot 2a3e915e…, policy hydrate, as dr
+boot: qemu-system-x86_64 -name dr -machine q35 -accel kvm -cpu host -smp 1 -m 512 -drive file=nbd+unix:///dr?socket=…
+disk dr: hydrated, all 32768 blocks local; 10115 fetched in 12s
+boot: the machine stopped after 22s
+boot: checkpointing disk dr
+```
+
+Other lines: `boot: disk … exists, so the machine runs on it as it is`; `boot: the card holds no UEFI variables, so the machine starts from …`; `boot: the card holds no TPM state, so the machine gets a new TPM`; `boot: asked the machine to shut down; waiting up to 2m0s`; `boot: the checkpoint failed, so the writes stay in the disk's epochs until the next one: …`.
+
+## iolock
+
+```
+swarmblk iolock -- command [arguments]
+```
+
+Runs a command as an **I/O flusher** (`PR_SET_IO_FLUSHER`, Linux 5.6 or newer): the kernel lets it allocate memory without waiting for writeback. This matters only when the host's own kernel mounts a swarmblk disk, through its NBD client (`nbd-client`, or `qemu-nbd -c`). The engine and Bee are then in the kernel's writeback path, and under memory pressure, writeback can wait for them while they wait for memory. VMs need none of this: QEMU's NBD client runs in user space.
+
+Use it to start Bee, for example in a systemd unit:
+
+```
+ExecStart=/usr/local/bin/swarmblk iolock -- /usr/local/bin/bee start --config /etc/bee/bee.yaml
+MemoryMin=1G
+```
+
+`serve -iolock` makes serve an I/O flusher too, and locks its memory (`mlockall`), so that none of it is ever swapped out. serve starts itself again to do it, since the flag belongs to a thread and Go starts threads before it can be set. Memory locks end when a process starts another program, so a Bee started through `iolock` keeps the flag but not locked memory: protect it with its service manager, as `MemoryMin=` does above. Never swap onto a swarmblk disk.
+
+The flag needs `CAP_SYS_RESOURCE`, and locked memory `CAP_IPC_LOCK`. Give them to the binary, or to the service with systemd's `AmbientCapabilities=CAP_SYS_RESOURCE CAP_IPC_LOCK`:
+
+```sh
+sudo setcap cap_sys_resource,cap_ipc_lock+ep /usr/local/bin/swarmblk
+```
+
+Without them, both refuse: `-iolock needs CAP_SYS_RESOURCE and CAP_IPC_LOCK: sudo setcap cap_sys_resource,cap_ipc_lock+ep …`.
+
 ## Writable disks
 
 A writable disk is a directory, `disks/<name>` in the state directory, of numbered **write epochs** on the snapshot the disk sits on. The newest epoch is **active** and takes the writes. During a checkpoint, the epoch before it is **frozen** under it. Reads look in the active epoch, then in the frozen one, then in the snapshot. At most one epoch is frozen at a time.
@@ -242,6 +369,24 @@ disk vm: re-stamping the … chunks of snapshot … with batch …
 disk vm: re-stamped snapshot … in …
 ```
 
+## Failures
+
+When Swarm cannot deliver a block after a fetch's four tries, the read follows serve's `-failure` policy:
+
+- `block`, the default: the read waits and tries again after 1, 2, 4, 8 and 16 seconds, and then every 30 seconds, until Swarm delivers the block or the guest's client disconnects. Other reads go on meanwhile. The guest sees a slow disk rather than an I/O error, which a filesystem such as ext4 answers by remounting read-only.
+- `error`: the read fails with an I/O error.
+
+A hydrated disk's local copy serves its blocks either way. Under `block`, serve raises an **alarm** when the first read starts waiting, repeats it every minute while reads wait, and clears it when none waits any more:
+
+```
+serve: disk vm1: ALARM: block 1030 cannot be fetched from Swarm: …; the guest waits until it can
+serve: disk vm1: ALARM: 2 reads have waited 1m0s for Swarm: …
+serve: disk vm1: reads go through again, after 1m42s
+serve: disk vm1: no read waits for Swarm any more, since their clients are gone, after 3m5s
+```
+
+With `-alarm command`, serve also runs `sh -c command` for each of these lines, in the background, with the line in `$SWARMBLK_ALARM` and `raised` or `cleared` in `$SWARMBLK_ALARM_STATE`; for example `-alarm 'notify-send swarmblk "$SWARMBLK_ALARM"'`. A command that fails is reported as `serve: the alarm command failed: …`.
+
 ## Lineages and keys
 
 A lineage is a Bee sequence feed: update *n* names snapshot *n*'s manifest, and Bee's `GET /feeds/<owner>/<topic>` resolves the feed to its latest one. Its owner is the address of a secp256k1 key, created with the lineage and kept in `keys/<owner>.key`, in hex, mode 0600. swarmblk refuses a key file that other users have any access to. Without the key, a lineage can still be read and branched, but not continued. Only one host may hold a lineage's key, since Swarm cannot stop two writers from overwriting each other's updates.
@@ -286,12 +431,55 @@ Any Swarm tool can read it: `GET /bzz/<snapshot>/disk.raw` is the raw disk, and 
 | `prefetch` | `prefetch.bin`, or null |
 | `stats` | `changed_blocks` since the parent, and `new_chunks` the parent lacked |
 
+## Disk cards
+
+A disk card is a JSON file, mode 0600, that names a machine's disk and holds what boot needs to run it ([SPEC §12](SPEC.md#12-disk-card)):
+
+| Field | Meaning |
+|---|---|
+| `format` | `swarmblk-card/1` |
+| `name` | the machine, and its disk's name |
+| `created` | when the card was made, in UTC |
+| `lineage` | `owner`, `topic`, and the `index` of `snapshot` in it; null for a card that stays on its snapshot |
+| `snapshot` | the disk's snapshot when the card was made |
+| `batches` | the batches that stamp the snapshot, its ancestors and the card's files |
+| `vm` | `definition`, `nvram` and `vtpm`: the machine's files, or null for those it lacks |
+
+The machine's files are on Swarm under Bee's chunk encryption. Each reference is 128 hexadecimal digits: the address and then the key, so `GET /bytes/<reference>` returns the file decrypted, and the card is as secret as its machine's TPM. A card is not signed, and holds no lineage key.
+
+### VM definitions
+
+A VM definition is a JSON file that describes the machine to QEMU. Fields left out take their defaults, which card fills in before upload:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `format` | `swarmblk-vm/1` | |
+| `arch` | `x86_64` | QEMU's target: boot runs `qemu-system-<arch>` |
+| `machine` | `q35` | QEMU's machine type |
+| `cpu` | `host` with KVM, else `max` | QEMU's CPU model |
+| `cpus` | 1 | virtual CPUs |
+| `memory` | 1024 | memory in MiB |
+| `firmware` | `bios` | `bios`, or `uefi` with OVMF |
+| `secure_boot` | false | UEFI with Secure Boot |
+| `tpm` | none | QEMU's TPM device, such as `tpm-crb` or `tpm-tis`, backed by swtpm |
+| `disk` | `virtio` | the disk's bus: `virtio`, `scsi` or `sata` |
+| `nic` | none | `{"model": "virtio-net-pci", "mac": "52:54:00:12:34:56"}`: QEMU's NIC model and its MAC address, which some guests' network settings match on |
+| `agent` | false | a channel for the QEMU guest agent |
+| `args` | none | more QEMU arguments |
+
+A small Linux server:
+
+```json
+{"memory": 2048, "cpus": 2, "firmware": "uefi", "nic": {"model": "virtio-net-pci", "mac": "52:54:00:12:34:56"}, "agent": true}
+```
+
 ## Local state
 
 | Path, in the state directory | Holds |
 |---|---|
 | `chunks/` | every chunk swarmblk has handled, checked on write, under two levels of directories named by its address; `serve -cache` bounds it, and it can be deleted while nothing runs |
 | `disks/<name>/` | a writable disk: `lock`, `control.sock` while served, its epochs `1/`, `2/`, …, its `policy`, and `image/` or `restamp.json` as that policy keeps them; deleting it loses the writes since its last snapshot |
+| `disks/<name>/vm/` | the machine that `boot` runs on the disk: `vm.json`, `nvram.fd`, `tpm/`, `swtpm.log`, and the sockets `qmp.sock`, `qga.sock` and `swtpm.sock`; boot's NBD socket is `disks/<name>/nbd.sock` |
 | `keys/<owner>.key` | lineage keys; back them up, and never share them |
 | `nbd.sock` | serve's default socket |
 
@@ -320,13 +508,25 @@ The state directory and `keys/` are created with mode 0700.
 | `hydration policies are for a writable disk: serve it with -disk` | `-policy` needs `-disk` |
 | `disk …: re-stamping needs a batch to stamp with` | set `SWARMBLK_BATCH`, or pass `-batch` |
 | `size …: use bytes, or a number with K, M, G or T` | check `-cache` |
+| `failure policy …: use block or error` | check `-failure` |
+| `… needs CAP_SYS_RESOURCE and CAP_IPC_LOCK: sudo setcap …` | give the binary the capabilities, as the message says ([iolock](#iolock)) |
+| `name the machine with -name`, `name the VM definition with -vm` | card needs both, unless `-disk` names a disk that boot ran |
+| `vm definition: …` | the [VM definition](#vm-definitions) has a field format 1 does not allow |
+| `UEFI variables are for a machine with UEFI firmware`, `TPM state is for a machine with a TPM` | set `firmware` or `tpm` in the definition, or leave out `-nvram` or `-vtpm` |
+| `card: …` | the card file is damaged, or of another format |
+| `… has mode …, but a card holds keys: keep it private (chmod 600)` | a warning: `chmod 600` the card |
+| `lineage …: the head reads as update …, older than the card's update …` | Bee's lookup lags: try again, or boot the card's own snapshot with `-snapshot` |
+| `disk … exists: -snapshot is for a new disk` | leave out `-snapshot`, or boot with another `-disk` name |
+| `no OVMF firmware here: install OVMF, or name its code file with -firmware` | install OVMF (Ubuntu's `ovmf` package), or pass `-firmware` |
+| `no OVMF build here reads UEFI variables of … bytes` | install the OVMF build the machine used, or pass its code file with `-firmware` |
+| `the machine has a TPM: exec: "swtpm": …` | install swtpm, or pass `-swtpm` |
 
 ## Limits
 
 - Disks of 64 MiB to 1 TiB, a power of two in size.
 - No encryption: anyone with a reference can read the disk. Encrypt inside the guest if needed.
 - One writer per lineage, and one serve or checkpoint per disk at a time.
-- There is no failure policy yet: a block that cannot be fetched is an I/O error in the guest, unless the disk's local copy holds it.
+- A disk card is not signed and holds its keys in the clear: keep it like a private key.
 - NBD over Unix sockets only, on Linux, with Bee 2.8.2 or newer.
 
 ## Developer tools

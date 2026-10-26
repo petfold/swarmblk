@@ -4,7 +4,7 @@ A virtual disk backed by Ethereum Swarm.
 
 Each snapshot is a standard Swarm file, so its chunk tree is the block map. Unchanged blocks are shared between snapshots, zero regions cost nothing, and any Swarm tool can fetch a snapshot as a raw image and verify it by its root.
 
-**Status:** experimental. Phases 0 and 1 are done, and Phase 2, the block engine, is under way: a VM runs straight on a swarmblk disk and takes snapshots while it works. See [ROADMAP.md](ROADMAP.md). To try it, follow the [user guide](docs/GUIDE.md); every command and option is in the [reference](docs/REFERENCE.md).
+**Status:** experimental. Phases 0 and 1 are done, and Phase 2, the block engine, nears its gate: a VM runs straight on a swarmblk disk, takes snapshots while it works, and comes back on another computer from a disk card. See [ROADMAP.md](ROADMAP.md). To try it, follow the [user guide](docs/GUIDE.md); every command and option is in the [reference](docs/REFERENCE.md).
 
 ## Why a block device
 
@@ -31,7 +31,7 @@ It is too slow for cold random reads over large data, such as a database scannin
 
 ## Examples
 
-- A server's host dies, and its VM boots on another provider from the [disk card](docs/DESIGN.md#7-writers-lineages-and-handoff) while the rest of the disk streams in.
+- A server's host dies, and its VM boots on another provider from its [disk card](docs/REFERENCE.md#disk-cards) while the rest of the disk streams in.
 - A fleet of CI runners boots a standard build image, and each job gets a throwaway branch.
 - An instructor publishes a lab VM, thirty students each run a branch, and only their own changes are stored.
 - Kiosks or edge devices update by fetching only the blocks that changed between two snapshots.
@@ -52,7 +52,7 @@ Details: [docs/DESIGN.md](docs/DESIGN.md) (architecture) and [docs/SPEC.md](docs
 
 ## Try it
 
-The [user guide](docs/GUIDE.md) walks through putting a small VM's disk on Swarm, booting it from there, taking live snapshots, and restoring it on another computer.
+The [user guide](docs/GUIDE.md) walks through putting a small VM's disk on Swarm, booting it from there, taking live snapshots, and bringing the machine back on another computer from a disk card.
 
 ### Without swarmblk code
 

@@ -204,7 +204,7 @@ Under `$SWARMBLK_HOME` (default `~/.local/share/swarmblk`), mode 0700:
 |---|---|
 | `chunks/` | content-addressed chunk store: tree cache (all intermediates of known snapshots) and chunk cache (leaves), verified on write. `serve -cache` bounds it, 4 GiB by default: a sweep removes the leaves used least recently, read or written, and never intermediate chunks or manifests. A writer holds `chunks/.lock` shared from putting chunks until Bee has synced them; a sweep takes it alone, or skips |
 | `state.db` | embedded key-value store (e.g. bbolt): lineages (id, owner, topic, head index, head manifest), batches (id, bound host, depth, TTL forecast, fullest bucket), coverage (address → batch ids), epochs (Phase 2) |
-| `disks/` | writable disks, each a directory of write epochs (§11), a `lock` file that the process holding the disk keeps an exclusive `flock` on, and, while `serve` holds it, `control.sock` (§8). Also its hydration policy and what that keeps (§11): `policy`, `image/` and `restamp.json` |
+| `disks/` | writable disks, each a directory of write epochs (§11), a `lock` file that the process holding the disk keeps an exclusive `flock` on, and, while `serve` holds it, `control.sock` (§8). Also its hydration policy and what that keeps (§11): `policy`, `image/` and `restamp.json`. A disk that `boot` runs also has its NBD socket, `nbd.sock`, and `vm/`: the machine's definition `vm.json`, its UEFI variables `nvram.fd`, its TPM state `tpm/`, and the sockets of QEMU's monitor, the guest agent and swtpm (§12) |
 | `keys/` | lineage keys, one file `<owner>.key` each, holding the private key in hex, mode 0600; never logged or committed. A key file that other users can read is refused |
 
 ## 11. Write epochs (Phase 2)
@@ -230,24 +230,70 @@ Reads take a block from the copy first and put what they fetch in it, and a back
 
 A re-stamping disk uploads every distinct chunk of its snapshot again under the batch, as one stream, once. It then records `restamp.json`, `{"snapshot": …, "batches": […]}`: every chunk of that snapshot carries a stamp from one of the batches. A checkpoint moves the record to the new snapshot and adds its batch.
 
-## 12. Disk card (draft, Phase 2)
+## 12. Disk card
 
-A JSON document that restores a machine from the bare network. It is secret when it holds keys.
+A JSON document that restores a machine from the bare network: `swarmblk card` makes one, and `swarmblk boot` runs the machine on a new writable disk. A card is secret, since its references carry keys.
 
 ```json
 {
   "format": "swarmblk-card/1",
   "name": "web-01",
-  "registry": { "owner": "0x…", "topic": "…" },
-  "lineage": { "owner": "0x…", "topic": "…" },
-  "snapshot": "<manifest reference at card time>",
-  "batches": ["…"],
-  "disk_key": "<LUKS key material or ACT reference, optional>",
-  "vm": { "definition": "<reference>", "nvram": "<reference>", "vtpm": "<reference>" }
+  "created": "2026-10-27T07:00:00Z",
+  "lineage": { "owner": "0x<40 hex>", "topic": "<64 hex>", "index": 12 },
+  "snapshot": "<64 hex manifest reference>",
+  "batches": ["<64 hex batch id>"],
+  "vm": { "definition": "<128 hex>", "nvram": "<128 hex, or null>", "vtpm": "<128 hex, or null>" }
 }
 ```
 
-The `vm` blobs are encrypted before upload. Signature scheme and key wrapping are decided in Phase 2.
+| Field | Meaning |
+|---|---|
+| `name` | the machine, and the name `boot` gives its disk: letters, digits, dots, dashes and underscores |
+| `lineage` | the lineage the disk's checkpoints continue, and `snapshot`'s update in it; null for a card that stays on `snapshot` |
+| `snapshot` | the disk's snapshot when the card was made |
+| `batches` | every batch known to stamp chunks the card reaches: the snapshot's (§5) and the one that stamped the blobs |
+| `vm.definition` | the VM definition below |
+| `vm.nvram` | the UEFI variables file, as the firmware wrote it, or null |
+| `vm.vtpm` | a tar archive of the regular files in swtpm's state directory, or null |
+
+- Each `vm` blob goes through Bee's pipeline with encryption on, at redundancy level 0, and is stamped and synced before the card is written. Its reference is 64 bytes, the root chunk's address and then its key, as Bee's encrypted references are. `GET /bytes/<reference>` returns the blob decrypted, so whoever holds the card can read them.
+- A card is not signed. Everything it names is content-addressed, encrypted under a key it holds, or signed by the lineage key. It holds no lineage key: a machine booted from it starts a new lineage (§7).
+- A new disk from a card starts on the head of its lineage, which must be at update `index` or later, or on `snapshot` when `lineage` is null.
+- Readers must ignore unknown fields. `registry` and `disk_key` are reserved for Phase 4.
+
+**VM definition,** format 1. `swarmblk card` fills in the defaults before upload, so a stored definition is complete:
+
+```json
+{
+  "format": "swarmblk-vm/1",
+  "arch": "x86_64",
+  "machine": "q35",
+  "cpu": "",
+  "cpus": 2,
+  "memory": 2048,
+  "firmware": "uefi",
+  "secure_boot": false,
+  "tpm": "tpm-crb",
+  "disk": "virtio",
+  "nic": { "model": "virtio-net-pci", "mac": "52:54:00:12:34:56" },
+  "agent": true,
+  "args": []
+}
+```
+
+| Field | Meaning | Default |
+|---|---|---|
+| `arch` | QEMU's target; `boot` runs `qemu-system-<arch>` | `x86_64` |
+| `machine` | QEMU's machine type | `q35` |
+| `cpu` | QEMU's CPU model | `host` with KVM, else `max` |
+| `cpus`, `memory` | virtual CPUs, and memory in MiB | 1, 1024 |
+| `firmware` | `bios` or `uefi` | `bios` |
+| `secure_boot` | UEFI with Secure Boot | false |
+| `tpm` | QEMU's TPM device, such as `tpm-crb` or `tpm-tis`, backed by swtpm; empty for none | none |
+| `disk` | the disk's bus: `virtio`, `scsi` or `sata` | `virtio` |
+| `nic` | QEMU's NIC `model` and its `mac` address; null for none | none |
+| `agent` | a virtio-serial channel for the QEMU guest agent, which live checkpoints use (§8) | false |
+| `args` | more QEMU arguments | none |
 
 ## 13. Bee API usage
 
