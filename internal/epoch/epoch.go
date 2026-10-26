@@ -207,21 +207,31 @@ func Abandoned(dir string) bool {
 	return true
 }
 
+// ReadSuper reads the superblock of the epoch in dir without opening the
+// epoch, which another process may hold: it is replaced atomically.
+func ReadSuper(dir string) (Super, error) {
+	b, err := os.ReadFile(filepath.Join(dir, superFile))
+	if err != nil {
+		return Super{}, err
+	}
+	var s Super
+	if err := json.Unmarshal(b, &s); err != nil {
+		return Super{}, fmt.Errorf("epoch %s: %w", dir, err)
+	}
+	if s.Format != Format || s.Size <= 0 || s.Size%swarm.ChunkSize != 0 {
+		return Super{}, fmt.Errorf("epoch %s: format %q, size %d", dir, s.Format, s.Size)
+	}
+	return s, nil
+}
+
 // Open opens the epoch in dir and recovers it: it replays the index and
 // drops the first record that fails a checksum, or whose data does, and
 // everything after it, which no Sync covered. It truncates both files to
 // what it kept.
 func Open(dir string) (*Epoch, error) {
-	b, err := os.ReadFile(filepath.Join(dir, superFile))
+	s, err := ReadSuper(dir)
 	if err != nil {
 		return nil, err
-	}
-	var s Super
-	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, fmt.Errorf("epoch %s: %w", dir, err)
-	}
-	if s.Format != Format || s.Size <= 0 || s.Size%swarm.ChunkSize != 0 {
-		return nil, fmt.Errorf("epoch %s: format %q, size %d", dir, s.Format, s.Size)
 	}
 	e := &Epoch{dir: dir, super: s, blocks: map[int64]*Block{}}
 	if e.data, err = os.OpenFile(filepath.Join(dir, dataFile), os.O_RDWR, 0); err != nil {

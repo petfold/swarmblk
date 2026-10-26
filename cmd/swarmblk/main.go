@@ -1,13 +1,16 @@
-// Swarmblk keeps virtual disks on Ethereum Swarm (docs/DESIGN.md). This is
-// the Phase 1 command line:
+// Swarmblk keeps virtual disks on Ethereum Swarm (docs/DESIGN.md). Its
+// command line:
 //
 //	swarmblk import [-bee url] [-batch id] [-home dir] image.raw
 //	swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] [-prefetch file] overlay.qcow2 | -disk name
 //	swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
 //	swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
 //	swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
-//	swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
-//	swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-batch id] [-every interval] [-qga socket] [-policy policy] ... -disk name [lineage|snapshot]
+//	swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-failure policy] [-alarm command] [-iolock] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
+//	swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-failure policy] [-alarm command] [-iolock] [-batch id] [-every interval] [-qga socket] [-policy policy] ... -disk name [lineage|snapshot]
+//	swarmblk card [-bee url] [-batch id] [-home dir] [-name name] [-vm file] [-nvram file] [-vtpm dir] [-o file] -disk name | lineage|snapshot
+//	swarmblk boot [-bee url] [-home dir] [-disk name] [-snapshot lineage|snapshot] [-batch id] [-every interval] [-policy policy] [-qemu binary] [-firmware file] [-swtpm binary] [-display how] [-nic backend] ... card [-- qemu-arguments]
+//	swarmblk iolock -- command [arguments]
 //
 // import uploads a raw disk image as a format-1 tree (SPEC §2) in a first
 // snapshot. checkpoint turns a stopped VM's qcow2 overlay into the next
@@ -27,8 +30,14 @@
 // guest agent if -qga names its socket. A disk's -policy says whether it
 // keeps a whole local copy (hydrate), stamps every chunk again under the
 // batch (restamp), or neither (lazy), and serve keeps the chunk cache under
-// -cache (DESIGN §3). A lineage is given as 0x<owner>/<topic> and stands for
-// its latest snapshot. The defaults come from $SWARMBLK_BEE_URL,
+// -cache (DESIGN §3). A read that Swarm cannot serve waits and raises an
+// alarm, or with -failure error fails. card makes a disk card (SPEC §12),
+// which names a disk's lineage and holds its machine's definition, UEFI
+// variables and TPM state, and boot runs the card's machine with QEMU on a
+// writable disk that it serves. iolock runs a command, such as Bee, as an
+// I/O flusher, as serve -iolock runs serve, for a host whose kernel mounts
+// the disk. A lineage is given as 0x<owner>/<topic> and stands for its
+// latest snapshot. The defaults come from $SWARMBLK_BEE_URL,
 // $SWARMBLK_BATCH and $SWARMBLK_HOME.
 package main
 
@@ -58,6 +67,10 @@ func main() {
 		cmdDiff(os.Args[2:])
 	case "serve":
 		cmdServe(os.Args[2:])
+	case "card":
+		cmdCard(os.Args[2:])
+	case "boot":
+		cmdBoot(os.Args[2:])
 	case "iolock":
 		if err := cmdIOLock(os.Args[2:]); err != nil {
 			log.Fatal(err)
@@ -74,8 +87,10 @@ func usage() {
   swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
   swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
   swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
-  swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
-  swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-batch id] [-every interval] [-qga socket] [-policy policy] ... -disk name [lineage|snapshot]
+  swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-failure policy] [-alarm command] [-iolock] [-record file] [-prefetch file] [-window blocks] [-nocache] lineage|snapshot | -root root
+  swarmblk serve [-bee url] [-home dir] [-socket path] [-cache size] [-failure policy] [-alarm command] [-iolock] [-batch id] [-every interval] [-qga socket] [-policy policy] ... -disk name [lineage|snapshot]
+  swarmblk card [-bee url] [-batch id] [-home dir] [-name name] [-vm file] [-nvram file] [-vtpm dir] [-o file] -disk name | lineage|snapshot
+  swarmblk boot [-bee url] [-home dir] [-disk name] [-snapshot lineage|snapshot] [-batch id] [-every interval] [-policy policy] [-qemu binary] [-firmware file] [-swtpm binary] [-display how] [-nic backend] ... card [-- qemu-arguments]
   swarmblk iolock -- command [arguments]
 `)
 	os.Exit(2)
