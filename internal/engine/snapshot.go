@@ -41,7 +41,13 @@ type Snapshot struct {
 
 	rec atomic.Pointer[Recorder] // notes reads for a boot trace, if set
 	pf  atomic.Pointer[Prefetch] // follows a boot trace ahead of the guest, if set
+
+	local storage.Getter // chunks at hand without a fetch, if set
 }
+
+// SetLocal tells the Snapshot where chunks are at hand without a fetch,
+// such as the local store, for LocalBlock. Call it before use.
+func (s *Snapshot) SetLocal(local storage.Getter) { s.local = local }
 
 // Open opens the disk under root. get supplies chunks after checking them,
 // typically from the local store reading through Bee; fetchers bounds the
@@ -141,6 +147,48 @@ func (s *Snapshot) leaf(ctx context.Context, b int64) (swarm.Address, int64, err
 		if refs, err = s.node(ctx, j-1, child); err != nil {
 			return swarm.ZeroAddress, 0, err
 		}
+	}
+}
+
+// LocalBlock returns block b's contents if they are at hand without
+// waiting for the network: in a zero subtree or a zero leaf, or with the
+// leaf and its path in the tree cache or the local getter.
+func (s *Snapshot) LocalBlock(ctx context.Context, b int64) ([]byte, bool) {
+	if b < 0 || b >= s.g.Leaves() {
+		return nil, false
+	}
+	refs := s.root
+	for j := s.g.Levels; ; j-- {
+		child := refs[s.g.Slot(b, j)]
+		if child.Equal(tree.Zero(j - 1)) {
+			return make([]byte, swarm.ChunkSize), true
+		}
+		if j == 1 {
+			if s.local == nil {
+				return nil, false
+			}
+			ch, err := s.local.Get(ctx, child)
+			if err != nil || binary.LittleEndian.Uint64(ch.Data()) != swarm.ChunkSize {
+				return nil, false
+			}
+			block := make([]byte, swarm.ChunkSize) // a payload may lack trailing zeros
+			copy(block, ch.Data()[swarm.SpanSize:])
+			return block, true
+		}
+		next, ok := s.cached(child.ByteString())
+		if !ok {
+			if s.local == nil {
+				return nil, false
+			}
+			ch, err := s.local.Get(ctx, child)
+			if err != nil {
+				return nil, false
+			}
+			if next, err = s.g.Children(j-1, ch); err != nil {
+				return nil, false
+			}
+		}
+		refs = next
 	}
 }
 
