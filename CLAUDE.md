@@ -46,6 +46,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 |---|---|
 | `SWARMBLK_BEE_URL` | Bee API, default `http://localhost:1633` (Bee ≥ 2.8.2) |
 | `SWARMBLK_BATCH` | immutable batch for integration tests, bound to this host |
+| `SWARMBLK_BEE_URL_B` | optional second Bee node, which integration tests restore through |
 | `SWARMBLK_HOME` | local state, default `~/.local/share/swarmblk` (SPEC §10) |
 
 Unit tests need no network. Integration tests need a running Bee node and a funded immutable batch.

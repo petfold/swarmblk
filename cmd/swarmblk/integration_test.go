@@ -4,7 +4,9 @@ package main
 
 // Live tests against a running Bee node: $SWARMBLK_BEE_URL (default
 // http://localhost:1633), uploading with the immutable batch in
-// $SWARMBLK_BATCH, which must belong to that node. Run them with
+// $SWARMBLK_BATCH, which must belong to that node. Tests that restore
+// elsewhere read through $SWARMBLK_BEE_URL_B, another node, if it is set.
+// Run them with
 //
 //	go test -tags integration ./cmd/swarmblk
 
@@ -259,4 +261,64 @@ func TestLiveCheckpoint(t *testing.T) {
 	if sum(g) != want {
 		t.Error("QEMU reads the served lineage different from the VM's disk")
 	}
+}
+
+// TestLiveFilesystem runs the filesystem round trip through Bee (ROADMAP,
+// Phase 2): an ext4 image is imported and a change to it checkpointed
+// through $SWARMBLK_BEE_URL, then exported with an empty store through
+// $SWARMBLK_BEE_URL_B, another node, if that is set, else through the same
+// one, asking Bee not to cache. e2fsck must find the export clean, and every
+// file must read back as written.
+func TestLiveFilesystem(t *testing.T) {
+	needQEMU(t)
+	needE2fs(t)
+	batch := os.Getenv("SWARMBLK_BATCH")
+	if batch == "" {
+		t.Fatal("SWARMBLK_BATCH is not set")
+	}
+	url := envOr("SWARMBLK_BEE_URL", "http://localhost:1633")
+	ctx := context.Background()
+	c := bee.New(url, 64)
+	s, err := store.Open(filepath.Join(t.TempDir(), "chunks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := fsTree(t)
+	base := mkfs(t, tree)
+	var log bytes.Buffer
+	snap0, err := importImage(ctx, c, s, batch, base, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+
+	mod := filepath.Join(t.TempDir(), "mod.raw")
+	if err := os.WriteFile(mod, mustRead(t, base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	change(t, mod, tree)
+	log.Reset()
+	snap1, err := checkpoint(ctx, c, s, filepath.Join(t.TempDir(), "keys"), batch, diffOverlay(t, base, mod, snap0), false, nil, &log)
+	t.Log("\n" + log.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := envOr("SWARMBLK_BEE_URL_B", url)
+	cb := bee.New(other, fetchers)
+	cb.NoCache = true
+	fresh, err := store.Open(filepath.Join(t.TempDir(), "chunks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "exported.raw")
+	log.Reset()
+	got, err := export(ctx, cb, fresh, snap1.String(), out, &log)
+	t.Logf("export through %s:\n%s", other, log.String())
+	if err != nil || !got.Equal(snap1) {
+		t.Fatalf("export: %s, %v", got, err)
+	}
+	if !bytes.Equal(mustRead(t, out), mustRead(t, mod)) {
+		t.Fatal("the export differs from the changed image")
+	}
+	checkFS(t, out, tree)
 }

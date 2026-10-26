@@ -49,6 +49,8 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - [x] Trace-driven prefetch (`prefetch.bin`, SPEC §6): `serve -record`, `checkpoint -prefetch`, prefetch ahead of the guest ([first runs](docs/results/phase2-prefetch-2026-10-26.md))
 - [ ] Cold-boot measurement through the engine, on a disk no node has fetched, to set the bound Phase 0 left open
 - [ ] Hydration as a per-disk policy: lazy, hydrate, or re-stamp only (DESIGN §3)
+- [x] Filesystem round trip without root or a VM: an ext4 image built with `mkfs.ext4 -d`, changed with `debugfs`, checkpointed, and exported on another node; `e2fsck -fn` must be clean and every file's checksum equal (`TestFilesystem`, and `TestLiveFilesystem` through node B)
+- [ ] Crash consistency with a real guest: files written with checksums and `fsync`, QEMU killed at random points, the overlay checkpointed and restored on another node; `fsck` must be clean and every file that was `fsync`ed intact, over many runs. With the guest's own driver writing, the same workload on ext4, XFS and Btrfs compares what checkpoints upload (DESIGN §9)
 - [ ] Live checkpoints from an atomic cut; guest-agent freeze for application consistency
 - [ ] Failure policy: block the guest and raise an alarm after retries
 - [ ] `PR_SET_IO_FLUSHER` and locked memory for the engine and Bee
