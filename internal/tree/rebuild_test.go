@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"testing"
@@ -127,6 +128,117 @@ func rebuildRounds(t *testing.T, size int) {
 	}
 	if unchanged, chunks, err := Rebuild(ctx, store, root, nil); err != nil || !unchanged.Equal(root) || len(chunks) != 0 {
 		t.Errorf("Rebuild with no blocks gave %s and %d chunks (%v)", unchanged, len(chunks), err)
+	}
+}
+
+// TestRebuildSkipsUnchanged adds blocks written with their old contents to a
+// set of changes. The root and the chunks must be the same as without them,
+// and such blocks alone must change nothing.
+func TestRebuildSkipsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	img := sparseImage(64 << 20)
+	root, store := build(t, img, redundancy.NONE)
+	block := func(b int64) []byte { return slices.Clone(img[b*swarm.ChunkSize : (b+1)*swarm.ChunkSize]) }
+	same := map[int64][]byte{12000: nil, 16383: nil} // zeros already, the second in a zero subtree
+	for _, b := range []int64{0, 10, 1024, 1279, 2000} {
+		same[b] = block(b)
+	}
+	if got, chunks, err := Rebuild(ctx, store, root, same); err != nil || !got.Equal(root) || len(chunks) != 0 {
+		t.Errorf("unchanged blocks alone gave %s and %d chunks (%v), want %s and none", got, len(chunks), err, root)
+	}
+
+	changes := map[int64][]byte{1024: nil, 3000: block(10), 12001: bytes.Repeat([]byte{1}, swarm.ChunkSize)}
+	want, wantChunks, err := Rebuild(ctx, store, root, changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maps.Copy(same, changes)
+	got, chunks, err := Rebuild(ctx, store, root, same)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(want) || !slices.EqualFunc(chunks, wantChunks, func(a, b swarm.Chunk) bool { return a.Equal(b) }) {
+		t.Errorf("with unchanged blocks: root %s and %d chunks; without: %s and %d", got, len(chunks), want, len(wantChunks))
+	}
+	// Three changed leaves, their level-1 chunks (blocks 1024 and 3000 share
+	// none) and the root.
+	if len(chunks) != 3+3+1 {
+		t.Errorf("%d chunks, want 7", len(chunks))
+	}
+}
+
+// TestRebuildInWindows applies one set of changes in a single Rebuild and
+// in three windows, each rebuilding the last one's root, as a checkpoint of
+// a large overlay does. The roots must agree, and Changes must find exactly
+// the chunks that the single Rebuild returned, new children before their
+// parents and the root last.
+func TestRebuildInWindows(t *testing.T) {
+	ctx := context.Background()
+	img := sparseImage(128 << 20)
+	root, store := build(t, img, redundancy.NONE)
+	_, oldTree := build(t, img, redundancy.NONE) // the old tree's chunks alone
+	src := rand.NewChaCha8([32]byte{3})
+	blocks := mutate(img, rand.New(src), src, 300)
+
+	want, wantChunks, err := Rebuild(ctx, store, root, blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := root
+	keys := slices.Sorted(maps.Keys(blocks))
+	for w := range 3 {
+		window := map[int64][]byte{}
+		for _, b := range keys[w*len(keys)/3 : (w+1)*len(keys)/3] {
+			window[b] = blocks[b]
+		}
+		var chunks []swarm.Chunk
+		if got, chunks, err = Rebuild(ctx, store, got, window); err != nil {
+			t.Fatal(err)
+		}
+		for _, ch := range chunks {
+			if err := store.Put(ctx, ch); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !got.Equal(want) {
+		t.Fatalf("three windows gave root %s, one Rebuild %s", got, want)
+	}
+
+	changes, err := Changes(ctx, store, root, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSet := map[string]bool{}
+	for _, ch := range wantChunks {
+		wantSet[ch.Address().ByteString()] = true
+	}
+	done := map[string]bool{}
+	for _, a := range changes {
+		if !wantSet[a.ByteString()] || done[a.ByteString()] {
+			t.Fatalf("Changes returned %s, which Rebuild did not, or twice", a)
+		}
+		done[a.ByteString()] = true
+		ch, err := store.Get(ctx, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if binary.LittleEndian.Uint64(ch.Data()) > swarm.ChunkSize {
+			// An intermediate chunk: a child that the old tree lacks
+			// everywhere changed at its place, so it must come first.
+			for r := swarm.SpanSize; r < len(ch.Data()); r += swarm.HashSize {
+				c := swarm.NewAddress(ch.Data()[r : r+swarm.HashSize])
+				if old, err := oldTree.Has(ctx, c); err != nil || !old && !done[c.ByteString()] {
+					t.Fatalf("Changes returned %s before its child %s (%v)", a, c, err)
+				}
+			}
+		}
+	}
+	if len(changes) != len(wantChunks) || !changes[len(changes)-1].Equal(got) {
+		t.Errorf("Changes returned %d chunks ending with %s; Rebuild returned %d ending with the root %s", len(changes), changes[len(changes)-1], len(wantChunks), got)
+	}
+	if none, err := Changes(ctx, store, got, got); err != nil || len(none) != 0 {
+		t.Errorf("Changes of a tree against itself: %d chunks, %v", len(none), err)
 	}
 }
 

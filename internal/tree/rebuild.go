@@ -40,10 +40,12 @@ func open(ctx context.Context, get storage.Getter, root swarm.Address) (Geometry
 }
 
 // Rebuild returns the root of the tree that the tree under root becomes when
-// the given blocks change, together with every chunk it computed: the new
-// leaves and each intermediate chunk on their paths, distinct, the root last.
-// blocks maps block numbers to their new 4096-byte contents; nil stands for
-// zeros. get supplies the old tree's chunks, but never a zero subtree's.
+// the given blocks change, together with every chunk that differs from the
+// old tree at its place: the changed leaves and each intermediate chunk on
+// their paths, distinct, the root last. blocks maps block numbers to their
+// new 4096-byte contents; nil stands for zeros. A block whose contents did
+// not change adds nothing, and if none changed, Rebuild returns root and no
+// chunks. get supplies the old tree's chunks, but never a zero subtree's.
 //
 // Chunks come from Bee's pkg/cac, so the root equals Bee's full rebuild of the
 // changed image (SPEC §14, I1). Callers upload only the returned chunks that
@@ -53,8 +55,35 @@ func Rebuild(ctx context.Context, get storage.Getter, root swarm.Address, blocks
 	if err != nil {
 		return swarm.ZeroAddress, nil, err
 	}
+	for b, data := range blocks {
+		if b < 0 || b >= g.Leaves() {
+			return swarm.ZeroAddress, nil, fmt.Errorf("block %d is outside a disk of %d blocks", b, g.Leaves())
+		}
+		if data != nil && len(data) != swarm.ChunkSize {
+			return swarm.ZeroAddress, nil, fmt.Errorf("block %d has %d bytes, want %d", b, len(data), swarm.ChunkSize)
+		}
+	}
 	if len(blocks) == 0 {
 		return root, nil, nil
+	}
+
+	// The old chunks on the blocks' paths, top-down: old[j][i] holds the
+	// references of chunk i at level j.
+	old := make([]map[int64][]swarm.Address, g.Levels+1)
+	old[g.Levels] = map[int64][]swarm.Address{0: rootRefs}
+	for j := g.Levels - 1; j >= 1; j-- {
+		old[j] = map[int64][]swarm.Address{}
+		for b := range blocks {
+			i := g.Index(b, j)
+			if _, ok := old[j][i]; ok {
+				continue
+			}
+			refs, err := g.load(ctx, get, j, old[j+1][g.Index(b, j+1)][g.Slot(b, j+1)])
+			if err != nil {
+				return swarm.ZeroAddress, nil, err
+			}
+			old[j][i] = refs
+		}
 	}
 
 	var out []swarm.Chunk
@@ -66,46 +95,28 @@ func Rebuild(ctx context.Context, get storage.Getter, root swarm.Address, blocks
 		}
 	}
 
-	// The new leaves: changed[i] is the new address of child i at the level
-	// below the one being rebuilt, starting with the blocks.
+	// The new leaves that differ from the old ones: changed[i] is the new
+	// address of child i at the level below the one being rebuilt, starting
+	// with the blocks.
 	zero := make([]byte, swarm.ChunkSize)
 	changed := map[int64]swarm.Address{}
 	for _, b := range slices.Sorted(maps.Keys(blocks)) {
 		data := blocks[b]
-		if b < 0 || b >= g.Leaves() {
-			return swarm.ZeroAddress, nil, fmt.Errorf("block %d is outside a disk of %d blocks", b, g.Leaves())
-		}
 		if data == nil {
 			data = zero
-		}
-		if len(data) != swarm.ChunkSize {
-			return swarm.ZeroAddress, nil, fmt.Errorf("block %d has %d bytes, want %d", b, len(data), swarm.ChunkSize)
 		}
 		ch, err := cac.New(data)
 		if err != nil {
 			return swarm.ZeroAddress, nil, err
 		}
+		if ch.Address().Equal(old[1][g.Index(b, 1)][g.Slot(b, 1)]) {
+			continue
+		}
 		changed[b] = ch.Address()
 		add(ch)
 	}
-
-	// The old chunks on the changed paths, top-down: old[j][i] holds the
-	// references of chunk i at level j.
-	old := make([]map[int64][]swarm.Address, g.Levels+1)
-	old[g.Levels] = map[int64][]swarm.Address{0: rootRefs}
-	for j := g.Levels - 1; j >= 1; j-- {
-		old[j] = map[int64][]swarm.Address{}
-		for b := range changed {
-			i := g.Index(b, j)
-			if _, ok := old[j][i]; ok {
-				continue
-			}
-			refs, err := g.load(ctx, get, j, old[j+1][g.Index(b, j+1)][g.Slot(b, j+1)])
-			if err != nil {
-				return swarm.ZeroAddress, nil, err
-			}
-			old[j][i] = refs
-		}
+	if len(changed) == 0 {
+		return root, nil, nil
 	}
 
 	// New chunks bottom-up, each a copy of the old one with its changed
@@ -195,4 +206,62 @@ func Diff(ctx context.Context, get storage.Getter, a, b swarm.Address) ([]Range,
 		return nil
 	}
 	return out, walk(ga.Levels, 0, ra, rb)
+}
+
+// Changes returns the chunks of the tree under b that differ from the tree
+// under a at their place, distinct, each after its children and b's root
+// last: what a writer uploads when b follows a (SPEC §8). Like Diff, it
+// skips every subtree whose address the two trees share. get must hold the
+// chunks of both trees on the differing paths, except zero subtrees'.
+func Changes(ctx context.Context, get storage.Getter, a, b swarm.Address) ([]swarm.Address, error) {
+	if a.Equal(b) {
+		return nil, nil
+	}
+	ga, ra, err := open(ctx, get, a)
+	if err != nil {
+		return nil, err
+	}
+	gb, rb, err := open(ctx, get, b)
+	if err != nil {
+		return nil, err
+	}
+	if ga != gb {
+		return nil, fmt.Errorf("disks of %d and %d bytes cannot be compared", ga.Size, gb.Size)
+	}
+	var out []swarm.Address
+	seen := map[string]bool{}
+	add := func(addr swarm.Address) {
+		if k := addr.ByteString(); !seen[k] {
+			seen[k] = true
+			out = append(out, addr)
+		}
+	}
+	var walk func(j int, xs, ys []swarm.Address) error
+	walk = func(j int, xs, ys []swarm.Address) error { // xs and ys: a level-j chunk's references
+		for i := range ys {
+			if xs[i].Equal(ys[i]) {
+				continue
+			}
+			if j > 1 {
+				cx, err := ga.load(ctx, get, j-1, xs[i])
+				if err != nil {
+					return err
+				}
+				cy, err := ga.load(ctx, get, j-1, ys[i])
+				if err != nil {
+					return err
+				}
+				if err := walk(j-1, cx, cy); err != nil {
+					return err
+				}
+			}
+			add(ys[i])
+		}
+		return nil
+	}
+	if err := walk(ga.Levels, ra, rb); err != nil {
+		return nil, err
+	}
+	add(b)
+	return out, nil
 }
