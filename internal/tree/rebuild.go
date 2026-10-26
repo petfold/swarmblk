@@ -265,3 +265,58 @@ func Changes(ctx context.Context, get storage.Getter, a, b swarm.Address) ([]swa
 	add(b)
 	return out, nil
 }
+
+// Walk calls fn for each run of blocks of the disk under root, in order:
+// count blocks from first on, whose leaves are all leaf. A zero subtree is a
+// single run of Z_0, known without a fetch; elsewhere a run is consecutive
+// blocks with the same leaf. get supplies the tree's intermediate chunks,
+// never a zero subtree's, and Walk returns the disk's geometry.
+func Walk(ctx context.Context, get storage.Getter, root swarm.Address, fn func(first, count int64, leaf swarm.Address) error) (Geometry, error) {
+	g, refs, err := open(ctx, get, root)
+	if err != nil {
+		return Geometry{}, err
+	}
+	var run struct {
+		first, count int64
+		leaf         swarm.Address
+	}
+	emit := func(first, count int64, leaf swarm.Address) error {
+		if run.count > 0 && run.first+run.count == first && run.leaf.Equal(leaf) {
+			run.count += count
+			return nil
+		}
+		if run.count > 0 {
+			if err := fn(run.first, run.count, run.leaf); err != nil {
+				return err
+			}
+		}
+		run.first, run.count, run.leaf = first, count, leaf
+		return nil
+	}
+	var walk func(j int, first int64, refs []swarm.Address) error
+	walk = func(j int, first int64, refs []swarm.Address) error { // refs: a level-j chunk's references
+		per := int64(1) << (7 * (j - 1)) // blocks under each child
+		for i, r := range refs {
+			b := first + int64(i)*per
+			switch {
+			case j == 1:
+				err = emit(b, 1, r)
+			case r.Equal(Zero(j - 1)):
+				err = emit(b, per, Zero(0))
+			default:
+				var children []swarm.Address
+				if children, err = g.load(ctx, get, j-1, r); err == nil {
+					err = walk(j-1, b, children)
+				}
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(g.Levels, 0, refs); err != nil {
+		return g, err
+	}
+	return g, fn(run.first, run.count, run.leaf)
+}

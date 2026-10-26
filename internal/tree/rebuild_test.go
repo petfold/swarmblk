@@ -12,6 +12,7 @@ import (
 
 	"github.com/ethersphere/bee/v2/pkg/cac"
 	"github.com/ethersphere/bee/v2/pkg/file/redundancy"
+	"github.com/ethersphere/bee/v2/pkg/storage"
 	"github.com/ethersphere/bee/v2/pkg/storage/inmemchunkstore"
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 )
@@ -239,6 +240,56 @@ func TestRebuildInWindows(t *testing.T) {
 	}
 	if none, err := Changes(ctx, store, got, got); err != nil || len(none) != 0 {
 		t.Errorf("Changes of a tree against itself: %d chunks, %v", len(none), err)
+	}
+}
+
+// TestWalk rebuilds images from the runs that Walk reports, with leaves from
+// Bee's build of them, and requires the same bytes. Zero subtrees must come
+// as single runs, without a fetch.
+func TestWalk(t *testing.T) {
+	ctx := context.Background()
+	for _, size := range []int{64 << 20, 128 << 20} {
+		img := sparseImage(size)
+		root, store := build(t, img, redundancy.NONE)
+		noZeros := storage.GetterFunc(func(ctx context.Context, addr swarm.Address) (swarm.Chunk, error) {
+			for j := 1; j <= 3; j++ {
+				if addr.Equal(Zero(j)) {
+					return nil, fmt.Errorf("Walk fetched Z_%d", j)
+				}
+			}
+			return store.Get(ctx, addr)
+		})
+		got := make([]byte, size)
+		var next, runs, zeroBlocks int64
+		g, err := Walk(ctx, noZeros, root, func(first, count int64, leaf swarm.Address) error {
+			if first != next || count < 1 {
+				return fmt.Errorf("run of %d from block %d after block %d", count, first, next-1)
+			}
+			next = first + count
+			runs++
+			if leaf.Equal(Zero(0)) {
+				zeroBlocks += count
+				return nil
+			}
+			ch, err := store.Get(ctx, leaf)
+			if err != nil {
+				return err
+			}
+			for b := first; b < first+count; b++ {
+				copy(got[b*swarm.ChunkSize:], ch.Data()[swarm.SpanSize:])
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.Size != int64(size) || next != g.Leaves() || !bytes.Equal(got, img) {
+			t.Errorf("%d MiB: Walk covered %d of %d blocks, and the image reads back different: %v", size>>20, next, g.Leaves(), !bytes.Equal(got, img))
+		}
+		// About 300 blocks of data, so few runs, most of them zeros.
+		if runs > 700 || zeroBlocks < g.Leaves()-400 {
+			t.Errorf("%d MiB: %d runs, %d zero blocks", size>>20, runs, zeroBlocks)
+		}
 	}
 }
 
