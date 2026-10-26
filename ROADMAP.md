@@ -32,7 +32,7 @@ Prove the data model: overlay changes become a new Swarm tree that restores else
 - [x] `internal/snapshot`: Mantaray manifest and `meta.json` (SPEC §5)
 - [x] `internal/lineage`: lineage feed read and write (SPEC §7)
 - [x] `swarmblk import <image.raw>`: chunk-level upload at redundancy 0, producing the same root as Phase 0's `/bytes` upload
-- [ ] `swarmblk checkpoint <overlay.qcow2>`: allocated extents from `qemu-img map --output=json` (zero clusters become Z_0), block reads through `qemu-nbd` or libnbd, rehash, skip covered addresses, upload, rebuild, confirm by tag, publish (SPEC §8)
+- [x] `swarmblk checkpoint <overlay.qcow2>`: the overlay's own blocks from `qemu-img map --output=json` (zero clusters become Z_0), read from the qcow2 file at the mapped offsets, rehash, rebuild, upload what differs from the parent, confirm by tag, rebase the overlay, publish (SPEC §8)
 - [ ] `swarmblk restore <lineage|manifest>`: a fresh qcow2 overlay on the HTTP backing, or `swarmblk export` to a raw file with verified chunk fetches
 - [ ] `swarmblk diff <a> <b>`: changed block ranges between two snapshots
 - [ ] Discard check: with QEMU `discard=unmap,detect-zeroes=unmap`, guest discards on the overlay appear as zero clusters, not holes onto the backing image

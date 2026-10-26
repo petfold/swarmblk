@@ -11,16 +11,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 
 	"github.com/petfold/swarmblk/internal/bee"
+	"github.com/petfold/swarmblk/internal/lineage"
 	"github.com/petfold/swarmblk/internal/snapshot"
 	"github.com/petfold/swarmblk/internal/store"
 )
@@ -96,5 +99,93 @@ func TestLiveImportMatchesBytes(t *testing.T) {
 	}
 	if index := get(""); !bytes.Contains(index, []byte(`"format":"swarmblk/1"`)) {
 		t.Errorf("/bzz/<snapshot>/ serves %.80q, want meta.json", index)
+	}
+}
+
+// TestLiveCheckpoint imports the test image, writes to a qcow2 overlay on it
+// through QEMU, which reads the snapshot from Bee as its backing file, and
+// checkpoints the overlay twice. Each time Bee must serve the new snapshot's
+// disk.raw with the same bytes as the VM's disk (SPEC §14, I7, on one host),
+// and the lineage's head must move to it. The lineage key is a new one in a
+// temporary directory.
+func TestLiveCheckpoint(t *testing.T) {
+	needQEMU(t)
+	batch := os.Getenv("SWARMBLK_BATCH")
+	if batch == "" {
+		t.Fatal("SWARMBLK_BATCH is not set")
+	}
+	url := envOr("SWARMBLK_BEE_URL", "http://localhost:1633")
+	ctx := context.Background()
+	c := bee.New(url, 64)
+	s, err := store.Open(filepath.Join(t.TempDir(), "chunks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := filepath.Join(t.TempDir(), "keys")
+	path, _ := testImage(t)
+	var progress bytes.Buffer
+	snap, err := importImage(ctx, c, s, batch, path, &progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ov := filepath.Join(t.TempDir(), "overlay.qcow2")
+	run(t, "qemu-img", "create", "-q", "-u", "-f", "qcow2", "-F", "raw", "-b",
+		`json:{"file.driver":"http","file.url":"`+url+`/bzz/`+snap.String()+`/disk.raw","file.timeout":60}`, ov, "64M")
+	sum := func(r io.Reader) [32]byte {
+		h := sha256.New()
+		if _, err := io.Copy(h, r); err != nil {
+			t.Fatal(err)
+		}
+		return [32]byte(h.Sum(nil))
+	}
+	for round, cmds := range [][]string{
+		{"write -P 0xab 4096 4096", "write -z 1M 64k", "write -P 0x5a 63M 1M"},
+		{"write -P 0x77 8M 4k"},
+	} {
+		args := []string{"-f", "qcow2"}
+		for _, cmd := range cmds {
+			args = append(args, "-c", cmd)
+		}
+		run(t, "qemu-io", append(args, ov)...)
+		raw := filepath.Join(t.TempDir(), "disk.raw")
+		run(t, "qemu-img", "convert", "-f", "qcow2", "-O", "raw", ov, raw)
+		f, err := os.Open(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := sum(f)
+		f.Close()
+
+		progress.Reset()
+		start := time.Now()
+		next, err := checkpoint(ctx, c, s, keys, batch, ov, false, &progress)
+		t.Logf("round %d, %v:\n%s", round, time.Since(start).Round(time.Millisecond), progress.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := snapshot.Read(ctx, s, next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Meta.Parent.Equal(snap) || got.Meta.Lineage.Index != uint64(round) {
+			t.Errorf("round %d: parent %s, lineage %+v; want %s and update %d", round, got.Meta.Parent, got.Meta.Lineage, snap, round)
+		}
+		resp, err := http.Get(url + "/bzz/" + next.String() + "/disk.raw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || sum(resp.Body) != want {
+			t.Errorf("round %d: Bee serves /bzz/%s/disk.raw (%s) with other bytes than the VM's disk", round, next, resp.Status)
+		}
+		resp.Body.Close()
+		l, _, err := lineage.FromMeta(*got.Meta.Lineage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if head, err := lineage.Head(ctx, c, l); err != nil || head.Index != uint64(round) || !head.Snapshot.Equal(next) {
+			t.Errorf("round %d: lineage head %+v, %v; want snapshot %s", round, head, err, next)
+		}
+		snap = next
 	}
 }

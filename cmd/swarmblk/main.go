@@ -1,11 +1,14 @@
 // Swarmblk keeps virtual disks on Ethereum Swarm (docs/DESIGN.md). This is
-// the Phase 1 command line, with one command so far:
+// the Phase 1 command line:
 //
 //	swarmblk import [-bee url] [-batch id] [-home dir] image.raw
+//	swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] overlay.qcow2
 //
-// import uploads a raw disk image as a format-1 tree (SPEC §2) and prints its
-// root. The defaults come from $SWARMBLK_BEE_URL, $SWARMBLK_BATCH and
-// $SWARMBLK_HOME.
+// import uploads a raw disk image as a format-1 tree (SPEC §2) in a first
+// snapshot, and prints the snapshot's reference. checkpoint turns a stopped
+// VM's qcow2 overlay into the next snapshot after the one it sits on,
+// publishes it in a lineage feed (SPEC §7), and prints its reference. The
+// defaults come from $SWARMBLK_BEE_URL, $SWARMBLK_BATCH and $SWARMBLK_HOME.
 package main
 
 import (
@@ -24,13 +27,18 @@ func main() {
 	switch os.Args[1] {
 	case "import":
 		cmdImport(os.Args[2:])
+	case "checkpoint":
+		cmdCheckpoint(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: swarmblk import [-bee url] [-batch id] [-home dir] image.raw")
+	fmt.Fprint(os.Stderr, `usage:
+  swarmblk import [-bee url] [-batch id] [-home dir] image.raw
+  swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] overlay.qcow2
+`)
 	os.Exit(2)
 }
 

@@ -16,4 +16,6 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
+      - name: QEMU's tools, for the overlay tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-utils
       - run: go test ./...

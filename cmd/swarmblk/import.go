@@ -69,15 +69,8 @@ func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path
 	if err != nil {
 		return swarm.ZeroAddress, fmt.Errorf("%s: %w", path, err)
 	}
-	b, err := c.Batch(ctx, batch)
-	if err != nil {
+	if err := checkBatch(ctx, c, batch); err != nil {
 		return swarm.ZeroAddress, err
-	}
-	switch {
-	case !b.Exists || !b.Usable:
-		return swarm.ZeroAddress, fmt.Errorf("batch %s is not usable", batch)
-	case !b.Immutable:
-		return swarm.ZeroAddress, fmt.Errorf("batch %s is mutable; swarmblk stamps only with immutable batches (SPEC §9, P1)", batch)
 	}
 
 	// Build the tree into the store, keeping each distinct chunk once.
@@ -125,46 +118,70 @@ func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path
 		}
 	}
 	fmt.Fprintf(w, "snapshot: %s, %d blocks with data, %d chunks to upload\n", snap, changed, len(order))
-
-	if err := checkRoom(ctx, c, batch, order, w); err != nil {
+	if err := upload(ctx, c, s, batch, order, w); err != nil {
 		return swarm.ZeroAddress, err
 	}
+	return snap, nil
+}
 
-	start = time.Now()
+// checkBatch refuses a batch that Bee cannot stamp with, or that is mutable
+// (SPEC §9, P1).
+func checkBatch(ctx context.Context, c *bee.Client, batch string) error {
+	b, err := c.Batch(ctx, batch)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !b.Exists || !b.Usable:
+		return fmt.Errorf("batch %s is not usable", batch)
+	case !b.Immutable:
+		return fmt.Errorf("batch %s is mutable; swarmblk stamps only with immutable batches (SPEC §9, P1)", batch)
+	}
+	return nil
+}
+
+// upload checks that batch has room for the chunks at addrs, sends them from
+// s in that order over one stream under a new tag, and waits until all of
+// them are synced (SPEC §8, steps 3 to 6). It reports progress to w.
+func upload(ctx context.Context, c *bee.Client, s *store.Store, batch string, addrs []swarm.Address, w io.Writer) error {
+	if err := checkRoom(ctx, c, batch, addrs, w); err != nil {
+		return err
+	}
+	start := time.Now()
 	tag, err := c.CreateTag(ctx)
 	if err != nil {
-		return swarm.ZeroAddress, err
+		return err
 	}
 	st, err := c.Stream(ctx, batch, tag.UID, 64)
 	if err != nil {
-		return swarm.ZeroAddress, err
+		return err
 	}
-	for i, a := range order {
+	for i, a := range addrs {
 		ch, err := s.Get(ctx, a)
 		if err == nil {
 			err = st.Put(ch)
 		}
 		if err != nil {
 			st.Close()
-			return swarm.ZeroAddress, fmt.Errorf("uploading chunk %d of %d: %w", i+1, len(order), err)
+			return fmt.Errorf("uploading chunk %d of %d: %w", i+1, len(addrs), err)
 		}
-		if (i+1)%max(len(order)/10, 1) == 0 {
-			fmt.Fprintf(w, "upload: %d of %d chunks sent\n", i+1, len(order))
+		if len(addrs) >= 100 && (i+1)%(len(addrs)/10) == 0 {
+			fmt.Fprintf(w, "upload: %d of %d chunks sent\n", i+1, len(addrs))
 		}
 	}
 	if err := st.Close(); err != nil {
-		return swarm.ZeroAddress, fmt.Errorf("upload: %d of %d chunks stored: %w", st.Acked(), len(order), err)
+		return fmt.Errorf("upload: %d of %d chunks stored: %w", st.Acked(), len(addrs), err)
 	}
-	fmt.Fprintf(w, "upload: %d chunks stored under tag %d in %v; waiting for sync\n", len(order), tag.UID, time.Since(start).Round(time.Second))
+	fmt.Fprintf(w, "upload: %d chunks stored under tag %d in %v; waiting for sync\n", len(addrs), tag.UID, time.Since(start).Round(time.Second))
 
 	for last := time.Now(); ; {
 		t, err := c.Tag(ctx, tag.UID)
 		if err != nil {
-			return swarm.ZeroAddress, err
+			return err
 		}
 		if t.Done() {
 			fmt.Fprintf(w, "sync: %d of %d synced after %v\n", t.Synced, t.Split-t.Seen, time.Since(start).Round(time.Second))
-			return snap, nil
+			return nil
 		}
 		if time.Since(last) >= time.Minute {
 			fmt.Fprintf(w, "sync: %d of %d synced\n", t.Synced, t.Split-t.Seen)
@@ -172,7 +189,7 @@ func importImage(ctx context.Context, c *bee.Client, s *store.Store, batch, path
 		}
 		select {
 		case <-ctx.Done():
-			return swarm.ZeroAddress, ctx.Err()
+			return ctx.Err()
 		case <-time.After(5 * time.Second):
 		}
 	}

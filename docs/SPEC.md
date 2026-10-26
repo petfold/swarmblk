@@ -168,6 +168,14 @@ Normative order. Steps 3–6 may run concurrently with the guest.
 
 A crash before step 7 leaves the previous snapshot current; the uploaded chunks are orphaned but harmless.
 
+**Offline checkpoints (Phase 1).** The disk is a qcow2 overlay whose backing file names its parent snapshot as `…/bzz/<snapshot>/disk.raw`, which QEMU reads from Bee over HTTP, as a plain URL or in a `json:` file name with QEMU's HTTP options. With the VM stopped, `swarmblk checkpoint`:
+
+- reads the blocks the overlay itself holds from the qcow2 file, at the offsets that `qemu-img map` reports with the backing file left out; zero clusters become Z_0;
+- rebuilds the parent's tree with them and uploads the chunks that differ from the parent's at their place (steps 2–6);
+- rebases the overlay onto the new snapshot (`qemu-img rebase -u`), which is safe because the two disks differ only where the overlay holds blocks, then publishes (step 7).
+
+The snapshot continues the parent's lineage when this host holds its key and the parent is its head; otherwise it starts a new lineage, which `-branch` also forces. A checkpoint that stops between the rebase and the publish leaves the overlay on an unpublished snapshot, and the next checkpoint publishes it first.
+
 ## 9. Postage rules
 
 - **P1.** Buy batches with the `immutable: true` header. Never stamp disk data with a mutable batch.
