@@ -340,6 +340,10 @@ func (s *Server) transmit(ctx context.Context, r io.Reader, w io.Writer, ex *Exp
 	sem := make(chan struct{}, inflight)
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	// Requests still running when the client goes, such as reads waiting
+	// for Swarm, have nobody to answer: they end.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var hdr [28]byte
 	for {
 		if _, err := io.ReadFull(r, hdr[:]); err != nil {

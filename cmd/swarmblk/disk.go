@@ -41,6 +41,7 @@ type diskState struct {
 	policy    string        // lazy, hydrate or restamp
 	img       *engine.Image // the local copy of a hydrating disk
 	moved     chan struct{} // told when a checkpoint moves the disk to its next snapshot
+	stall     engine.Stall  // what the disk's reads do when a block cannot be fetched, if set
 
 	mu sync.Mutex // one checkpoint at a time
 }
@@ -382,6 +383,9 @@ func (ds *diskState) promote(ctx context.Context, get storage.Getter, s *store.S
 			return err
 		}
 		esnap.SetLocal(s)
+		if ds.stall != nil {
+			esnap.SetStall(ds.stall)
+		}
 		if ds.img != nil {
 			old := ds.disk.Snapshot()
 			old.SetImage(ds.img, base.Meta.DiskRoot) // still readable while the copy moves on

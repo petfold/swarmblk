@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -41,6 +42,8 @@ func cmdServe(args []string) {
 	fs.StringVar(&cfg.qga, "qga", "", "freeze the guest's filesystems for checkpoints through the QEMU guest agent on this Unix `socket`")
 	fs.StringVar(&cfg.policy, "policy", "", "a disk's hydration `policy`: lazy, hydrate or restamp (default the disk's own, else lazy)")
 	cache := fs.String("cache", "4G", "bound the local chunk cache to this `size`, removing the leaves used least recently; 0 for no bound")
+	fs.StringVar(&cfg.failure, "failure", failureBlock, "when a block cannot be fetched: `block` the read and raise an alarm, or return an error")
+	fs.StringVar(&cfg.alarm, "alarm", "", "run this shell `command` when an alarm is raised or cleared, with the message in $SWARMBLK_ALARM")
 	fs.StringVar(&cfg.record, "record", "", "write the guest's reads to this `file` as a boot trace when serve stops")
 	fs.StringVar(&cfg.prefetch, "prefetch", "", "prefetch from the boot trace in this `file` instead of the snapshot's")
 	fs.Int64Var(&cfg.window, "window", 16384, "prefetch at most this many `blocks` of the trace ahead of the guest")
@@ -83,6 +86,8 @@ type serveConfig struct {
 	qga       string        // the guest agent's socket, if any
 	policy    string        // a disk's hydration policy, if given
 	cache     int64         // the bound on the chunk cache, in bytes, or 0
+	failure   string        // block or error: what a read does when Swarm cannot deliver
+	alarm     string        // a shell command for alarms, if any
 	sock      string        // the Unix socket to listen on
 	record    string        // where to write the boot trace, if anywhere
 	prefetch  string        // a boot trace to prefetch from instead of the snapshot's
@@ -131,6 +136,8 @@ func serve(ctx context.Context, c *bee.Client, s *store.Store, cfg serveConfig, 
 		return errors.New("checkpoints are for a writable disk: serve it with -disk")
 	case cfg.disk == "" && cfg.policy != "":
 		return errors.New("hydration policies are for a writable disk: serve it with -disk")
+	case cfg.failure != "" && cfg.failure != failureBlock && cfg.failure != failureError:
+		return fmt.Errorf("failure policy %q: use block or error", cfg.failure)
 	case cfg.every > 0 && cfg.batch == "":
 		return errors.New("periodic checkpoints need a batch to stamp with")
 	}
@@ -188,6 +195,13 @@ func serve(ctx context.Context, c *bee.Client, s *store.Store, cfg serveConfig, 
 		dev, name, desc = snap, ref.Ref.String(), "swarmblk snapshot "+ref.Ref.String()
 		if trace, err = snapshot.ReadTrace(ctx, get, ref); err != nil {
 			return err
+		}
+	}
+	if cfg.failure != failureError {
+		st := &stalls{what: strings.TrimPrefix(desc, "swarmblk "), alarm: cfg.alarm, w: w}
+		snap.SetStall(st.stall)
+		if ds != nil {
+			ds.stall = st.stall // and its next snapshots
 		}
 	}
 	if cfg.prefetch != "" {

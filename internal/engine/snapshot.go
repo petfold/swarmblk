@@ -46,7 +46,19 @@ type Snapshot struct {
 
 	local storage.Getter           // chunks at hand without a fetch, if set
 	img   atomic.Pointer[imageRef] // a local copy that reads look in first and fill, if set
+	stall atomic.Pointer[Stall]    // what a read does when it cannot fetch a block, if set
 }
+
+// A Stall decides what a read does when it cannot fetch block b, after the
+// fetch's own retries (DESIGN §3, fail visibly). It is called with the
+// error and the number of failures so far, even if ctx has ended: nil
+// makes the read try again, and an error ends the read with that error.
+// Once a read that stalled gets its block, the Stall is called once more
+// with a nil error. Without one, the read fails at once.
+type Stall func(ctx context.Context, b int64, err error, failures int) error
+
+// SetStall makes reads that cannot fetch a block ask f what to do.
+func (s *Snapshot) SetStall(f Stall) { s.stall.Store(&f) }
 
 // imageRef is a Snapshot's image, and a root that it may hold instead of
 // the Snapshot's.
@@ -245,20 +257,28 @@ func (s *Snapshot) ReadAt(ctx context.Context, p []byte, off int64) error {
 				copy(dst, block[lo-first:hi-first])
 				return nil
 			}
-			leaf, _, err := s.leaf(gctx, b)
-			if err != nil {
-				return err
+			stall := s.stall.Load()
+			for failures := 0; ; {
+				block, err := s.read(gctx, b)
+				if err == nil {
+					if failures > 0 {
+						(*stall)(gctx, b, nil, failures)
+					}
+					if block == nil {
+						clear(dst)
+					} else {
+						copy(dst, block[lo-first:hi-first])
+					}
+					return nil
+				}
+				failures++
+				if stall == nil {
+					return err
+				}
+				if err := (*stall)(gctx, b, err, failures); err != nil {
+					return err
+				}
 			}
-			clear(dst)
-			if leaf.Equal(tree.Zero(0)) {
-				return nil
-			}
-			block, err := s.block(gctx, b, leaf)
-			if err != nil {
-				return err
-			}
-			copy(dst, block[lo-first:hi-first])
-			return nil
 		})
 	}
 	return g.Wait()
@@ -275,6 +295,15 @@ func (s *Snapshot) image() *Image {
 		return nil
 	}
 	return r.m
+}
+
+// read fetches block b, or returns nil if its leaf is the zero leaf.
+func (s *Snapshot) read(ctx context.Context, b int64) ([]byte, error) {
+	leaf, _, err := s.leaf(ctx, b)
+	if err != nil || leaf.Equal(tree.Zero(0)) {
+		return nil, err
+	}
+	return s.block(ctx, b, leaf)
 }
 
 // imageBlock returns block b from the image, if the Snapshot has one that
