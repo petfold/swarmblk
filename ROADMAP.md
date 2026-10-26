@@ -50,7 +50,7 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - [x] Cold-boot measurement through the engine, on a disk no node has fetched, to set the bound Phase 0 left open: Alpine booted cold through node B in 17–18 min without prefetch and in 3.4–3.5 min with its trace ([results](docs/results/phase2-cold-2026-10-26.md)); Peter sets the bound
 - [ ] Hydration as a per-disk policy: lazy, hydrate, or re-stamp only (DESIGN §3)
 - [x] Filesystem round trip without root or a VM: an ext4 image built with `mkfs.ext4 -d`, changed with `debugfs`, checkpointed, and exported on another node; `e2fsck -fn` must be clean and every file's checksum equal (`TestFilesystem`, and `TestLiveFilesystem` through node B)
-- [ ] Crash consistency with a real guest: files written with checksums and `fsync`, QEMU killed at random points, the overlay checkpointed and restored on another node; `fsck` must be clean and every file that was `fsync`ed intact, over many runs. With the guest's own driver writing, the same workload on ext4, XFS and Btrfs compares what checkpoints upload (DESIGN §9)
+- [ ] Crash consistency with a real guest: files written with checksums and `fsync`, QEMU killed at random points, the overlay checkpointed and restored on another node; `fsck` must be clean and every file that was `fsync`ed intact, over many runs. With the guest's own driver writing, the same workload on ext4, XFS, Btrfs and ZFS compares what checkpoints upload (DESIGN §9), and so what a native ZFSwarm would save
 - [ ] Live checkpoints from an atomic cut; guest-agent freeze for application consistency
 - [ ] Failure policy: block the guest and raise an alarm after retries
 - [ ] `PR_SET_IO_FLUSHER` and locked memory for the engine and Bee
@@ -82,3 +82,7 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - vhost-user-blk and ublk exports
 - Suspend to Swarm and resume elsewhere (QEMU migration stream, lazy page loading)
 - Engine-side stamp signing, so Bee can be a remote gateway; engine-side encryption
+
+## Later projects
+
+- **ZFSwarm:** ZFS with Swarm underneath natively, instead of through a block device. ZFS is a Merkle tree: each block pointer carries its child's checksum up to the uberblock, which maps onto Swarm's trees and feeds. A "swarm" checksum would make every block pointer hold its block's Swarm reference, and OpenZFS's user-space stack (`libzpool`) behind FUSE or virtiofs would serve it with this engine's caches, write log, prefetch and feeds. First measure ZFS on swarmblk (the crash and cost test above), then prototype in `libzpool`; the hard part is ZFS's location-based allocation.
