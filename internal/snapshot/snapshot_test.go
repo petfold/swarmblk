@@ -3,10 +3,12 @@ package snapshot
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"math/rand/v2"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ethersphere/bee/v2/pkg/file/joiner"
@@ -24,11 +26,14 @@ import (
 // recorder stores chunks and remembers the order they came in.
 type recorder struct {
 	*inmemchunkstore.ChunkStore
+	mu    sync.Mutex
 	order []swarm.Address
 }
 
 func (r *recorder) Put(ctx context.Context, ch swarm.Chunk) error {
+	r.mu.Lock()
 	r.order = append(r.order, ch.Address())
+	r.mu.Unlock()
 	return r.ChunkStore.Put(ctx, ch)
 }
 
@@ -166,5 +171,62 @@ func TestReadRefusesOtherManifests(t *testing.T) {
 	extra := strings.Replace(string(good), `"format"`, `"future_field":[1,2],"format"`, 1)
 	if _, err := Read(ctx, s, rawManifest(t, s, map[string]swarm.Address{DiskPath: meta.DiskRoot, MetaPath: file(t, s, []byte(extra))})); err != nil {
 		t.Errorf("an unknown field: %v", err)
+	}
+}
+
+// TestChunks builds a snapshot of a 64 MiB disk with data, zeros and
+// repeated blocks, and a boot trace, into an empty store: Chunks must name
+// every chunk in the store once and nothing else, without fetching a leaf.
+func TestChunks(t *testing.T) {
+	ctx := context.Background()
+	s := inmemchunkstore.New()
+	disk := make([]byte, 64<<20)
+	src := rand.NewChaCha8([32]byte{7})
+	src.Read(disk[1<<20 : 3<<20])
+	copy(disk[40<<20:], disk[1<<20:1<<20+swarm.ChunkSize]) // a repeated block
+	root := file(t, s, disk)
+	meta := NewMeta(int64(len(disk)), root)
+	trace := make([]byte, 10000) // more than one chunk
+	src.Read(trace)
+	ref, err := Write(ctx, s, s, meta, trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	s.Iterate(ctx, func(ch swarm.Chunk) (bool, error) {
+		want[ch.Address().ByteString()] = true
+		return false, nil
+	})
+	got := map[string]bool{}
+	fetched := 0
+	get := storage.GetterFunc(func(ctx context.Context, a swarm.Address) (swarm.Chunk, error) {
+		ch, err := s.Get(ctx, a)
+		if err == nil && binary.LittleEndian.Uint64(ch.Data()) == swarm.ChunkSize && len(ch.Data()) == swarm.SpanSize+swarm.ChunkSize {
+			// A full 4 KiB leaf: meta.json and the manifest are shorter,
+			// and intermediate chunks span more.
+			fetched++
+		}
+		return ch, err
+	})
+	err = Chunks(ctx, get, ref, func(a swarm.Address) error {
+		if got[a.ByteString()] {
+			t.Errorf("chunk %s named twice", a)
+		}
+		got[a.ByteString()] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Errorf("Chunks named %d chunks, the store holds %d", len(got), len(want))
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("chunk %s not named", swarm.NewAddress([]byte(k)))
+		}
+	}
+	if fetched > 0 {
+		t.Errorf("Chunks fetched %d leaves of 4 KiB", fetched)
 	}
 }

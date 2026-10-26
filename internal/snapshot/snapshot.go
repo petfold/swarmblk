@@ -8,6 +8,7 @@ package snapshot
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -233,3 +234,49 @@ func Read(ctx context.Context, get storage.Getter, ref swarm.Address) (Snapshot,
 type discard struct{}
 
 func (discard) Put(context.Context, swarm.Chunk) error { return nil }
+
+// Chunks calls fn once for each distinct chunk of the snapshot at ref: its
+// manifest's nodes, and the chunk trees of disk.raw, meta.json and
+// prefetch.bin, the zero subtrees' chunks once each. It fetches with get
+// only the chunks that have children; a leaf's address comes from its
+// parent. Re-stamping a snapshot (DESIGN §5) uploads exactly these.
+func Chunks(ctx context.Context, get storage.Getter, ref swarm.Address, fn func(swarm.Address) error) error {
+	m, err := manifest.NewDefaultManifestReference(ref, loadsave.NewReadonly(get, discard{}, redundancy.NONE))
+	if err != nil {
+		return fmt.Errorf("snapshot %s: %w", ref, err)
+	}
+	seen := map[string]bool{}
+	var walk func(addr swarm.Address, leaf bool) error
+	walk = func(addr swarm.Address, leaf bool) error {
+		k := addr.ByteString()
+		if seen[k] {
+			return nil
+		}
+		seen[k] = true
+		if err := fn(addr); err != nil || leaf {
+			return err
+		}
+		ch, err := get.Get(ctx, addr)
+		if err != nil {
+			return fmt.Errorf("snapshot %s: chunk %s: %w", ref, addr, err)
+		}
+		span := binary.LittleEndian.Uint64(ch.Data())
+		if span <= swarm.ChunkSize {
+			return nil // a leaf after all
+		}
+		refs := ch.Data()[swarm.SpanSize:]
+		if len(refs)%swarm.HashSize != 0 {
+			return fmt.Errorf("snapshot %s: chunk %s spans %d bytes but holds %d bytes of references", ref, addr, span, len(refs))
+		}
+		// Each child covers at most a 128th of the span, rounded up to a
+		// block, so under a chunk of at most 128 blocks they are leaves.
+		leaves := span <= swarm.Branches*swarm.ChunkSize
+		for i := 0; i < len(refs); i += swarm.HashSize {
+			if err := walk(swarm.NewAddress(refs[i:i+swarm.HashSize]), leaves); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return m.IterateAddresses(ctx, func(addr swarm.Address) error { return walk(addr, false) })
+}
