@@ -67,7 +67,7 @@ internal/lineage/    lineage feed (registry in Phase 4)
 internal/nbd/        NBD server (Phase 2)
 internal/engine/     block engine: snapshots read-only, disks writable (Phase 2)
 internal/epoch/      write epochs: the local write log (Phase 2)
-docs/                GUIDE, DESIGN, SPEC, PHASE0, results/
+docs/                GUIDE, REFERENCE, DESIGN, SPEC, PHASE0, results/
 ```
 
 ## Commands

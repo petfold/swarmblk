@@ -447,4 +447,4 @@ All its local state is in `~/.local/share/swarmblk`, or wherever `SWARMBLK_HOME`
 | Bee | the program that connects a computer to Swarm |
 | NBD | the protocol QEMU uses to reach the engine |
 
-For how swarmblk works inside, see [DESIGN.md](DESIGN.md), and for its formats, [SPEC.md](SPEC.md).
+Every command, option and message is in the [reference](REFERENCE.md). For how swarmblk works inside, see [DESIGN.md](DESIGN.md), and for its formats, [SPEC.md](SPEC.md).
