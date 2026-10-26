@@ -6,6 +6,7 @@
 //	swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
 //	swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
 //	swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
+//	swarmblk serve [-bee url] [-home dir] [-socket path] lineage|snapshot | -root root
 //
 // import uploads a raw disk image as a format-1 tree (SPEC §2) in a first
 // snapshot. checkpoint turns a stopped VM's qcow2 overlay into the next
@@ -14,9 +15,11 @@
 // from Bee, and export writes a snapshot's disk to a raw image. These four
 // print the snapshot's reference. diff prints the runs of 4 KiB blocks that
 // differ between two disks of the same size, each as its first block and the
-// number of blocks. A lineage is given as 0x<owner>/<topic> and stands for
-// its latest snapshot. The defaults come from $SWARMBLK_BEE_URL,
-// $SWARMBLK_BATCH and $SWARMBLK_HOME.
+// number of blocks. serve exports a snapshot's disk, or the disk tree under
+// a root, read-only over NBD on a Unix socket, through the engine (DESIGN
+// §3), and prints the URI for QEMU. A lineage is given as 0x<owner>/<topic>
+// and stands for its latest snapshot. The defaults come from
+// $SWARMBLK_BEE_URL, $SWARMBLK_BATCH and $SWARMBLK_HOME.
 package main
 
 import (
@@ -43,6 +46,8 @@ func main() {
 		cmdExport(os.Args[2:])
 	case "diff":
 		cmdDiff(os.Args[2:])
+	case "serve":
+		cmdServe(os.Args[2:])
 	default:
 		usage()
 	}
@@ -55,6 +60,7 @@ func usage() {
   swarmblk restore [-bee url] [-home dir] lineage|snapshot overlay.qcow2
   swarmblk export [-bee url] [-home dir] lineage|snapshot image.raw
   swarmblk diff [-bee url] [-home dir] lineage|snapshot lineage|snapshot
+  swarmblk serve [-bee url] [-home dir] [-socket path] lineage|snapshot | -root root
 `)
 	os.Exit(2)
 }

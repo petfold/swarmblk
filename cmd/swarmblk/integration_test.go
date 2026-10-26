@@ -9,6 +9,7 @@ package main
 //	go test -tags integration ./cmd/swarmblk
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,9 +108,9 @@ func TestLiveImportMatchesBytes(t *testing.T) {
 // through QEMU, which reads the snapshot from Bee as its backing file, and
 // checkpoints the overlay twice. Each time Bee must serve the new snapshot's
 // disk.raw with the same bytes as the VM's disk (SPEC §14, I7, on one host),
-// and the lineage's head must move to it. Then the lineage is exported and
-// restored with an empty store, and both must read as the VM's disk. The
-// lineage key is a new one in a temporary directory.
+// and the lineage's head must move to it. Then the lineage is exported,
+// restored and served over NBD, each with an empty store, and all must read
+// as the VM's disk. The lineage key is a new one in a temporary directory.
 func TestLiveCheckpoint(t *testing.T) {
 	needQEMU(t)
 	batch := os.Getenv("SWARMBLK_BATCH")
@@ -223,5 +225,38 @@ func TestLiveCheckpoint(t *testing.T) {
 	defer f.Close()
 	if sum(f) != want {
 		t.Error("QEMU reads the restored overlay different from the VM's disk")
+	}
+
+	// The engine serves the lineage over NBD, again with an empty store.
+	served, err := store.Open(filepath.Join(t.TempDir(), "chunks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx, cancel := context.WithCancel(ctx)
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(sctx, c, served, l.String(), "", filepath.Join(t.TempDir(), "nbd.sock"), pw, io.Discard)
+		pw.Close()
+	}()
+	line, err := bufio.NewReader(pr).ReadString('\n')
+	if err != nil {
+		cancel()
+		t.Fatalf("serve: %v", <-done)
+	}
+	go io.Copy(io.Discard, pr)
+	viaNBD := filepath.Join(t.TempDir(), "nbd.raw")
+	run(t, "qemu-img", "convert", "-f", "raw", "-O", "raw", strings.TrimSpace(line), viaNBD)
+	cancel()
+	if err := <-done; err != nil {
+		t.Error(err)
+	}
+	g, err := os.Open(viaNBD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if sum(g) != want {
+		t.Error("QEMU reads the served lineage different from the VM's disk")
 	}
 }

@@ -147,11 +147,11 @@ const fetchers = 32
 // at out, and reports its SHA-256 (SPEC §14, I7). It walks the tree itself,
 // fetching every chunk with GET /chunks and checking it, and leaves zero
 // subtrees as holes. The tree's intermediate chunks stay in s; leaves are
-// read from s when it has them, and are not kept. It returns the snapshot's
-// reference.
+// read from s when it has them, and are not kept. Fetches are retried as
+// serve's are. It returns the snapshot's reference.
 func export(ctx context.Context, c *bee.Client, s *store.Store, arg, out string, w io.Writer) (swarm.Address, error) {
 	start := time.Now()
-	get := s.Through(c.Chunk)
+	get := s.Through(retry(c.Chunk))
 	snap, err := resolve(ctx, c, get, arg, w)
 	if err != nil {
 		return swarm.ZeroAddress, err
@@ -208,7 +208,7 @@ func exportTo(ctx context.Context, c *bee.Client, s *store.Store, get storage.Ge
 			for r := range runs {
 				ch, err := s.Get(gctx, r.leaf)
 				if err != nil {
-					ch, err = c.Chunk(gctx, r.leaf)
+					ch, err = retry(c.Chunk)(gctx, r.leaf)
 				}
 				if err != nil {
 					return err

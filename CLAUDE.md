@@ -11,7 +11,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 
 ## Where we are
 
-**Phase 2: the block engine over NBD,** started on 2026-10-26 after Phase 1's gate was met ([results](docs/results/phase1-gate-2026-10-26.md)). Phase 1 built the offline tools on `internal/tree`, `internal/store`, `internal/bee`, `internal/snapshot` and `internal/lineage`: `swarmblk import`, `checkpoint` (a stopped VM's qcow2 overlay into the next snapshot of a lineage), `restore`, `export` and `diff`. `internal/nbd` now serves block devices over NBD with structured replies, block status, flush, FUA, trim and write-zeroes, tested against QEMU's client. Next is the engine's read path: a device over a snapshot with tree and chunk caches, zero short-circuits, holes through block status, and parallel verified fetches.
+**Phase 2: the block engine over NBD,** started on 2026-10-26 after Phase 1's gate was met ([results](docs/results/phase1-gate-2026-10-26.md)). Phase 1 built the offline tools on `internal/tree`, `internal/store`, `internal/bee`, `internal/snapshot` and `internal/lineage`: `swarmblk import`, `checkpoint` (a stopped VM's qcow2 overlay into the next snapshot of a lineage), `restore`, `export` and `diff`. `internal/nbd` serves block devices over NBD with structured replies, block status, flush, FUA, trim and write-zeroes, tested against QEMU's client. `internal/engine` has the read path: a snapshot's disk read from its tree, with every intermediate chunk cached, zero subtrees answered without fetches and reported as holes, and parallel verified fetches through the local store. `swarmblk serve` exports a snapshot or a lineage's head read-only over NBD, and QEMU runs overlays on it. Without prefetch, a cold read waits for one network round trip per guest read. Next are trace-driven prefetch and write epochs.
 
 ## Hard rules
 
@@ -63,6 +63,7 @@ internal/store/      content-addressed chunk store
 internal/snapshot/   manifest and meta.json
 internal/lineage/    lineage feed (registry in Phase 4)
 internal/nbd/        NBD server (Phase 2)
+internal/engine/     block engine: read path so far (Phase 2)
 docs/                DESIGN, SPEC, PHASE0, results/
 ```
 
