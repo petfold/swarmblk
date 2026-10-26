@@ -52,11 +52,13 @@ func New(batch string) *Bee {
 	return &Bee{Batch: batch, Immutable: true, Capacity: 32, Store: inmemchunkstore.New(), hidden: map[string]bool{}}
 }
 
-// Client serves b until the test ends and returns a client for it.
+// Client serves b until the test ends and returns a client for it, which
+// keeps as many connections open as the engine fetches at once, so that
+// parallel fetches reuse them instead of opening new ones.
 func (b *Bee) Client(t testing.TB) *bee.Client {
 	srv := httptest.NewServer(b)
 	t.Cleanup(srv.Close)
-	return bee.New(srv.URL, 4)
+	return bee.New(srv.URL, 64)
 }
 
 // Received returns the addresses of the chunks uploaded so far, in order.
