@@ -11,7 +11,7 @@ swarmblk is a virtual disk whose snapshots live on Ethereum Swarm. Each snapshot
 
 ## Where we are
 
-**Phase 1: the offline checkpointer.** Phase 0 is done ([results](docs/results/phase0-2026-10-25.md)), and its gate was decided on 2026-10-25: go on. `internal/tree` has geometry, path arithmetic, zero subtrees, incremental rebuild and diff, `internal/store` keeps verified chunks on disk, and `internal/bee` uploads chunks (single or streamed), tracks sync by tag, reads batches and buckets, and publishes and reads feed updates. `swarmblk import` builds an image's tree with Bee's pipeline into the store, wraps it in a snapshot manifest (`internal/snapshot`) and uploads both, root last; the disk root matches Phase 0's `/bytes` upload, and stock Bee serves the snapshot under `/bzz`. `internal/lineage` creates lineage keys, signs updates byte-identical to Bee's sequence feeds, and publishes only on top of the head it expects. `swarmblk checkpoint` turns a stopped VM's qcow2 overlay into the next snapshot of a lineage and rebases the overlay onto it (SPEC §8). `swarmblk restore` makes a new overlay on a lineage's head or any snapshot, `swarmblk export` writes a snapshot's disk to a raw image with verified chunk fetches, and `swarmblk diff` lists the blocks that differ between two snapshots. Phase 1's gate was met on 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): laptop B restored a checkpointed guest disk byte-identical through its own Bee node. Phase 2, the NBD engine, starts on Peter's word.
+**Phase 2: the block engine over NBD,** started on 2026-10-26 after Phase 1's gate was met ([results](docs/results/phase1-gate-2026-10-26.md)). Phase 1 built the offline tools on `internal/tree`, `internal/store`, `internal/bee`, `internal/snapshot` and `internal/lineage`: `swarmblk import`, `checkpoint` (a stopped VM's qcow2 overlay into the next snapshot of a lineage), `restore`, `export` and `diff`. `internal/nbd` now serves block devices over NBD with structured replies, block status, flush, FUA, trim and write-zeroes, tested against QEMU's client. Next is the engine's read path: a device over a snapshot with tree and chunk caches, zero short-circuits, holes through block status, and parallel verified fetches.
 
 ## Hard rules
 
@@ -62,6 +62,7 @@ internal/beetest/    fake Bee node for unit tests
 internal/store/      content-addressed chunk store
 internal/snapshot/   manifest and meta.json
 internal/lineage/    lineage feed (registry in Phase 4)
+internal/nbd/        NBD server (Phase 2)
 docs/                DESIGN, SPEC, PHASE0, results/
 ```
 

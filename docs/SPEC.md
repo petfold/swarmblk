@@ -62,7 +62,7 @@ The engine computes Z_0 … Z_3 at start-up. A reference equal to Z_j (at level 
 
 ## 4. Sectors and partial writes
 
-- The NBD export advertises 512-byte logical and 4096-byte physical blocks (512e), with minimum 512, preferred 4096.
+- The NBD export advertises 512-byte logical and 4096-byte physical blocks (512e), with minimum 512, preferred 4096, and at most 32 MiB per request.
 - A write covering whole 4 KiB blocks replaces those blocks.
 - A write covering part of a block whose base is local merges at once.
 - A write covering part of a block whose base is not yet local is logged as (block, offset, length, bytes) and merged when the base arrives or at freeze. It never waits for a Swarm read.

@@ -43,7 +43,7 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 
 ## Phase 2 — Block engine over NBD
 
-- [ ] NBD server: evaluate an existing Go library (for example pojntfx/go-nbd) for structured replies, block status, flush, trim and write-zeroes; otherwise implement that subset
+- [x] NBD server: evaluate an existing Go library (for example pojntfx/go-nbd) for structured replies, block status, flush, trim and write-zeroes; otherwise implement that subset. Neither library checked had them, so `internal/nbd` implements the subset, tested against QEMU's client (DESIGN §12)
 - [ ] Write epochs with replayable, checksummed index; flush and FUA durability (SPEC §11)
 - [ ] Tree and chunk caches; zero short-circuit; holes through block status; parallel verified fetches
 - [ ] Trace-driven prefetch (`prefetch.bin`, SPEC §6), and hydration as a per-disk policy: lazy, hydrate, or re-stamp only (DESIGN §3)
