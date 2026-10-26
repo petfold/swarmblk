@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ethersphere/bee/v2/pkg/storage"
 	"github.com/ethersphere/bee/v2/pkg/swarm"
@@ -37,6 +38,9 @@ type Snapshot struct {
 
 	mu    sync.RWMutex
 	nodes map[string][]swarm.Address // intermediate chunks' references, by address
+
+	rec atomic.Pointer[Recorder] // notes reads for a boot trace, if set
+	pf  atomic.Pointer[Prefetch] // follows a boot trace ahead of the guest, if set
 }
 
 // Open opens the disk under root. get supplies chunks after checking them,
@@ -146,9 +150,16 @@ func (s *Snapshot) ReadAt(ctx context.Context, p []byte, off int64) error {
 	if off < 0 || end > s.g.Size {
 		return nbd.EINVAL
 	}
+	if rec := s.rec.Load(); rec != nil {
+		rec.touch(off/swarm.ChunkSize, (end-1)/swarm.ChunkSize)
+	}
+	pf := s.pf.Load()
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(cap(s.sem))
 	for first := off - off%swarm.ChunkSize; first < end; first += swarm.ChunkSize {
+		if pf != nil {
+			pf.read(first / swarm.ChunkSize)
+		}
 		lo, hi := max(first, off), min(first+swarm.ChunkSize, end)
 		dst := p[lo-off : hi-off]
 		g.Go(func() error {
