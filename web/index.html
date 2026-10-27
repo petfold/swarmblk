@@ -59,6 +59,12 @@ document.getElementById("how").textContent = {
 }[mode];
 document.getElementById("disk").textContent = snapshot ? url : "none";
 const status = document.getElementById("status");
+// halt stops the page with a message, which the status line then keeps.
+let halted = false;
+function halt(message) {
+  halted = true;
+  status.textContent = message;
+}
 const start = performance.now();
 const seconds = () => ((performance.now() - start) / 1000).toFixed(1);
 
@@ -122,7 +128,7 @@ let graphical = false;
 async function boot() {
   if (mode === "engine" || hda !== null) {
     if (!("serviceWorker" in navigator)) {
-      status.textContent = "This browser has no Service Workers, which the engine needs.";
+      halt("This browser has no Service Workers, which the engine needs.");
       return;
     }
     status.textContent = "starting swarmblk's engine…";
@@ -151,6 +157,15 @@ async function boot() {
     config[drive] = mode === "local" ? { url } : { url, async: true, size: await diskSize() };
   }
   if (hda !== null) {
+    if (!navigator.locks) {
+      halt("This browser cannot keep another tab off the hard disk, so the page does not use it.");
+      return;
+    }
+    if (!await holdDisk("hda")) {
+      halt("The hard disk is in use in another tab of this page. Close that tab, then reload this one.");
+      return;
+    }
+    hdaHeld = true;
     document.getElementById("hdabox").hidden = false;
     const info = await engineInfo("hda", hda, true);
     showHDA(info);
@@ -163,6 +178,21 @@ async function boot() {
   if (hda !== null) emulator.add_listener("emulator-ready", passWrites);
 }
 
+// holdDisk takes this browser's lock on a writable disk, and holds it while
+// the page lives, so that no other tab writes to the disk too: every tab of
+// the page shares one engine. It waits 5 s for the lock, which a page that a
+// reload replaces lets go of as it goes, and returns false if another tab
+// keeps it.
+let hdaHeld = false;
+function holdDisk(name) {
+  return new Promise(resolve => {
+    navigator.locks.request(`swarmblk-disk-${name}`, { signal: AbortSignal.timeout(5000) }, () => {
+      resolve(true);
+      return new Promise(() => {}); // held until the page goes
+    }).catch(() => resolve(false));
+  });
+}
+
 // passWrites sends the hard disk's writes to the engine, in order. v86 keeps
 // a write in its own cache, and the guest's write completes once the engine
 // holds it too.
@@ -170,7 +200,7 @@ function passWrites() {
   const ide = emulator.v86.cpu.devices.ide;
   const buffer = ide && ide.primary && ide.primary.master && ide.primary.master.buffer;
   if (!buffer) {
-    status.textContent = "cannot find the hard disk in v86, so its writes stay in the tab";
+    document.getElementById("checkpointed").textContent = "The page cannot find the hard disk in v86, so its writes stay in the tab.";
     return;
   }
   const keep = buffer.set.bind(buffer);
@@ -226,6 +256,7 @@ document.getElementById("reset").addEventListener("click", async e => {
 });
 
 setInterval(async () => {
+  if (halted) return;
   let s = `running for ${seconds()} s; the machine made ${reads} disk reads`;
   if (engineStats) {
     s += `; the engine served ${(engineStats.bytes / 1048576).toFixed(1)} MiB: ${engineStats.fetched} chunks fetched from Bee and ${engineStats.cached} from the browser's cache, every one checked against its address`;
@@ -256,7 +287,8 @@ if (params.get("record")) {
 }
 
 // With ?report=1 the page posts what it shows to its server every 2 s, for
-// a test harness; with ?type=A;B it types those lines at the serial
+// a test harness, with ?tab=NAME to tell its tabs apart and with ?twin=1
+// opening a second tab; with ?type=A;B it types those lines at the serial
 // console's login prompt, 3 s apart, and with ?checkpoint=1 checkpoints the
 // hard disk 10 s after the last. In graphical mode it also posts the screen,
 // every 10 s.
@@ -264,12 +296,24 @@ if (params.get("report")) {
   const screen = () => document.querySelector("#screen_container > div").innerText;
   const terminal = () => (document.querySelector("#serial .xterm-rows") || {}).innerText || "";
   setInterval(() => {
-    fetch("/log", { method: "POST", body: JSON.stringify({ t: seconds(), mode, reads, graphical, engine: engineStats, checkpoint: checkpointResult, screen: screen(), serial: serial.slice(-4000), terminal: terminal(), timings }) }).catch(() => {});
+    fetch("/log", { method: "POST", body: JSON.stringify({ t: seconds(), tab: params.get("tab"), status: status.textContent, hda: hdaHeld, mode, reads, graphical, engine: engineStats, checkpoint: checkpointResult, screen: screen(), serial: serial.slice(-4000), terminal: terminal(), timings }) }).catch(() => {});
   }, 2000);
   setInterval(() => {
     const canvas = document.querySelector("#screen_container canvas");
     if (graphical && canvas) canvas.toBlob(b => fetch("/shot", { method: "POST", body: b }).catch(() => {}), "image/png");
   }, 10000);
+  // With ?twin=1 the page opens a second tab of itself once it holds the
+  // hard disk, which must find the disk in use.
+  if (params.get("twin")) {
+    const wait = setInterval(() => {
+      if (!hdaHeld) return;
+      clearInterval(wait);
+      const u = new URL(location.href);
+      u.searchParams.delete("twin");
+      u.searchParams.set("tab", "twin");
+      window.open(u.toString());
+    }, 500);
+  }
   const lines = (params.get("type") || "").split(";").filter(Boolean);
   let typed = false;
   setInterval(() => {
@@ -281,7 +325,7 @@ if (params.get("report")) {
   }, 1000);
 }
 
-boot().catch(e => { status.textContent = `failed: ${e.message || e}`; });
+boot().catch(e => halt(`failed: ${e.message || e}`));
 </script>
 </body>
 </html>

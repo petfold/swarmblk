@@ -23,6 +23,7 @@ Then open `http://127.0.0.1:8099/?snapshot=<reference>` in a browser on the same
 - **A checkpoint puts them on Swarm.** With `&batch=ID` the page's button checkpoints the disk: the engine rebuilds the snapshot's tree with the writes, uploads the chunks that changed and the snapshot's manifest, stamped from the batch, waits until Bee has synced them, and publishes the snapshot as the next update of the disk's lineage (SPEC §8). The machine keeps running. The first checkpoint starts a lineage, and the next ones continue it.
 - **The browser is the lineage's one writer.** The engine makes the lineage's key and keeps it, with the disk's state, in this browser profile's Cache Storage, for this page's origin. Clearing the site's data loses the key and the writes since the last checkpoint, but not the snapshots. Another browser that opens the lineage reads its latest update, and its own checkpoints start a lineage of their own.
 - **The batch must be the Bee node's own.** Bee stamps the uploads, so a batch is used from one node only (SPEC §9, P2).
+- **One tab at a time.** All the page's tabs in a browser share one engine, so a page holds a browser lock on its writable disk while it lives (the Web Locks API). A second tab with the same disk waits 5 s, time for a page that a reload replaces to let go, then says the disk is in use and does not start.
 - **The disk remembers where it is.** Once the browser holds a disk, the page opens it from its own state, whatever `hda` says. The page's link forgets the browser's copy, writes and all, and starts again from `hda`.
 
 ## Parameters
@@ -40,6 +41,8 @@ Then open `http://127.0.0.1:8099/?snapshot=<reference>` in a browser on the same
 | `type=A;B` | with `report`, type these lines at the serial console's login prompt |
 | `record=1` | post the boot trace to `serve.py` once the serial console shows a login prompt |
 | `checkpoint=1` | with `type`, checkpoint the hard disk 10 s after the last line |
+| `tab=NAME` | with `report`, names the tab in its reports |
+| `twin=1` | with `report`, open a second tab of the page once this one holds the hard disk, which must find it in use (headless Chromium needs `--disable-popup-blocking`) |
 
 ## Boot traces
 
