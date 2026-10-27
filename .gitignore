@@ -7,3 +7,7 @@
 /beeproxy
 /chunkprobe
 /swarmblk
+
+# What web/build.sh fetches and builds, and what web/serve.py keeps
+/web/vendor/
+/web/out/

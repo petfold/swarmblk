@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>swarmblk in a tab</title>
+<link rel="stylesheet" href="vendor/xterm.css">
+<style>
+  body { margin: 16px; background: #111; color: #ddd; font: 14px system-ui, sans-serif; }
+  #screen_container { display: inline-block; background: #000; }
+  #screen_container > div { white-space: pre; font: 14px monospace; line-height: 14px; }
+  #status { margin: 8px 0; color: #9c9; }
+  #serial { width: 720px; margin: 8px 0; border: 1px solid #444; }
+  code { color: #fc9; }
+</style>
+</head>
+<body>
+<p>A PC emulated in this tab (v86), booting a disk that swarmblk put on Swarm. <span id="how"></span></p>
+<p>Disk: <code id="disk"></code></p>
+<div id="status">starting…</div>
+<p id="tracing" hidden>The engine records the blocks this boot reads: <a id="trace" href="#">download them as a boot trace</a> once the machine is up, to store with the snapshot (<code>swarmblk checkpoint -prefetch</code>).</p>
+<p>Serial console (click and type):</p>
+<div id="serial"></div>
+<p>Screen:</p>
+<div id="screen_container"><div></div><canvas style="display: none"></canvas></div>
+<script src="vendor/xterm.js"></script>
+<script src="vendor/libv86.js"></script>
+<script>
+// See README.md for the parameters.
+const params = new URLSearchParams(location.search);
+const bee = params.get("bee") || "http://localhost:1633";
+const snapshot = params.get("snapshot");
+const drive = params.get("drive") === "hda" ? "hda" : "cdrom";
+// The disk comes through swarmblk's engine in a Service Worker (sw.js), or
+// with ?direct=1 straight from Bee's /bzz, or with ?local=FILE from a file
+// next to this page, to check the page without Swarm.
+const mode = params.get("local") ? "local" : params.get("direct") ? "direct" : "engine";
+const url = {
+  local: params.get("local"),
+  direct: `${bee}/bzz/${snapshot}/disk.raw`,
+  engine: `/swarm-disk/${snapshot}?bee=${encodeURIComponent(bee)}`,
+}[mode];
+document.getElementById("how").textContent = {
+  local: "Here the disk comes from a file next to this page, without Swarm.",
+  direct: "The disk is read from Bee's /bzz as the machine asks for it; writes stay in the tab.",
+  engine: "swarmblk's engine, compiled to WebAssembly and running in a Service Worker, reads the disk chunk by chunk from Bee, checks every chunk against its address, and keeps it in the browser's cache; writes stay in the tab.",
+}[mode];
+document.getElementById("disk").textContent = url;
+const status = document.getElementById("status");
+const start = performance.now();
+const seconds = () => ((performance.now() - start) / 1000).toFixed(1);
+
+// Count the disk's reads, and time each.
+let reads = 0;
+const timings = [];
+const realOpen = XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open = function (method, u, ...rest) {
+  this._disk = String(u) === url;
+  if (this._disk) reads++;
+  return realOpen.call(this, method, u, ...rest);
+};
+const realSend = XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.send = function (...args) {
+  if (this._disk) {
+    const t0 = performance.now();
+    this.addEventListener("loadend", () => timings.push([Math.round(t0 - start), Math.round(performance.now() - t0), this.response ? this.response.byteLength : 0]));
+  }
+  return realSend.apply(this, args);
+};
+// v86 asks for X-Accept-Encoding: identity on range requests. Sent to Bee,
+// that header makes the browser ask Bee first (a CORS preflight), which Bee
+// refuses, so drop it: Bee never compresses a disk anyway.
+const realSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+  if (name.toLowerCase() !== "x-accept-encoding") realSetHeader.call(this, name, value);
+};
+
+// The engine's counters, when it serves the disk.
+let engineStats = null;
+async function pollStats() {
+  try { engineStats = await (await fetch("/swarm-disk/stats")).json(); } catch (e) {}
+}
+
+// The disk's size: from the engine, the end of a one-byte range read; from
+// Bee, which shows a page from elsewhere no Content-Range, a HEAD request's
+// Content-Length.
+async function diskSize() {
+  const direct = mode === "direct";
+  const r = await fetch(url, direct ? { method: "HEAD" } : { headers: { Range: "bytes=0-0" } });
+  if (!r.ok) throw new Error(`the disk: ${r.status} ${await r.text()}`);
+  const total = Number(direct ? r.headers.get("Content-Length") : (r.headers.get("Content-Range") || "").split("/")[1]);
+  if (!total) throw new Error("the disk's size is unknown");
+  return total;
+}
+
+let serial = "";
+let emulator;
+let graphical = false;
+
+async function boot() {
+  if (mode === "engine") {
+    if (!("serviceWorker" in navigator)) {
+      status.textContent = "This browser has no Service Workers, which the engine needs.";
+      return;
+    }
+    status.textContent = "starting swarmblk's engine…";
+    // The newest engine must serve the page: an updated worker takes over
+    // as soon as it is installed (sw.js skips waiting and claims the page).
+    const reg = await navigator.serviceWorker.register("sw.js", { updateViaCache: "none" });
+    await reg.update();
+    while (reg.installing || reg.waiting || !navigator.serviceWorker.controller || navigator.serviceWorker.controller !== reg.active) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    setInterval(pollStats, 1000);
+    document.getElementById("tracing").hidden = false;
+  }
+  const image = mode === "local" ? { url } : { url, async: true, size: await diskSize() };
+  emulator = new V86({
+    wasm_path: "vendor/v86.wasm",
+    memory_size: 128 * 1024 * 1024,
+    vga_memory_size: 8 * 1024 * 1024,
+    screen_container: document.getElementById("screen_container"),
+    bios: { url: "vendor/seabios.bin" },
+    vga_bios: { url: "vendor/vgabios.bin" },
+    [drive]: image,
+    filesystem: {}, // a shared folder, which some guests mount
+    serial_console: { type: "xtermjs", container: document.getElementById("serial") },
+    autostart: true,
+  });
+  emulator.add_listener("serial0-output-byte", b => { serial += String.fromCharCode(b); });
+  emulator.add_listener("screen-set-mode", g => { graphical = g; });
+}
+
+setInterval(() => {
+  let s = `running for ${seconds()} s; the machine made ${reads} disk reads`;
+  if (engineStats) {
+    s += `; the engine served ${(engineStats.bytes / 1048576).toFixed(1)} MiB: ${engineStats.fetched} chunks fetched from Bee and ${engineStats.cached} from the browser's cache, every one checked against its address`;
+  }
+  status.textContent = s;
+}, 1000);
+
+// The boot trace: a download for the user, or with ?record=1 a post to the
+// page's server once the serial console shows a login prompt.
+const traceURL = `/swarm-disk/trace/${snapshot}`;
+document.getElementById("trace").addEventListener("click", async e => {
+  e.preventDefault();
+  const r = await fetch(traceURL);
+  if (!r.ok) { status.textContent = `no boot trace: ${await r.text()}`; return; }
+  const blob = await r.blob();
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `${snapshot.slice(0, 8)}.trace` });
+  a.click();
+});
+if (params.get("record")) {
+  const wait = setInterval(async () => {
+    if (serial.includes("login:")) {
+      clearInterval(wait);
+      const r = await fetch(traceURL);
+      if (r.ok) await fetch("/trace", { method: "POST", body: await r.arrayBuffer() });
+    }
+  }, 1000);
+}
+
+// With ?report=1 the page posts what it shows to its server every 2 s, for
+// a test harness, and with ?type=A;B it types those lines at the serial
+// console's login prompt. In graphical mode it also posts the screen, every
+// 10 s.
+if (params.get("report")) {
+  const screen = () => document.querySelector("#screen_container > div").innerText;
+  const terminal = () => (document.querySelector("#serial .xterm-rows") || {}).innerText || "";
+  setInterval(() => {
+    fetch("/log", { method: "POST", body: JSON.stringify({ t: seconds(), mode, reads, graphical, engine: engineStats, screen: screen(), serial: serial.slice(-2000), terminal: terminal(), timings }) }).catch(() => {});
+  }, 2000);
+  setInterval(() => {
+    const canvas = document.querySelector("#screen_container canvas");
+    if (graphical && canvas) canvas.toBlob(b => fetch("/shot", { method: "POST", body: b }).catch(() => {}), "image/png");
+  }, 10000);
+  const lines = (params.get("type") || "").split(";").filter(Boolean);
+  let typed = false;
+  setInterval(() => {
+    if (!typed && lines.length && serial.includes("login:")) {
+      typed = true;
+      lines.forEach((line, i) => setTimeout(() => emulator.serial0_send(line + "\n"), 3000 * i));
+    }
+  }, 1000);
+}
+
+boot().catch(e => { status.textContent = `failed: ${e}`; });
+</script>
+</body>
+</html>

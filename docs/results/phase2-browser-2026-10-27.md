@@ -9,7 +9,7 @@ First runs of a swarmblk disk under an emulator in a web page, on laptop A with 
 - **Two ways to the disk:**
   - *direct:* v86 reads `/bzz/<snapshot>/disk.raw` from Bee with HTTP range requests.
   - *engine:* `cmd/swarmblk-wasm`, swarmblk's engine compiled to WebAssembly, runs in a Service Worker. v86 reads `/swarm-disk/<snapshot>` from the page's own origin, and the engine answers from the disk tree: it fetches chunks with `GET /chunks`, checks each against its address, and keeps them in the browser's Cache Storage and in memory. It reads ahead of sequential reads, prefetches from the snapshot's boot trace, and records the guest's reads as a new trace.
-- The page shows the guest's serial console in xterm.js and its screen. The page, the Service Worker and the two libraries are not in the repository.
+- The page shows the guest's serial console in xterm.js and its screen. The page and the Service Worker are in [`web/`](../../web/README.md), whose `build.sh` fetches v86 and xterm.js.
 
 ## Results
 

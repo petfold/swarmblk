@@ -537,5 +537,6 @@ The state directory and `keys/` are created with mode 0700.
 | `cmd/chunkprobe` | measures chunk retrieval latency and throughput through a Bee node |
 | `tools/crashtest` | the crash-consistency and cost test with a real guest ([results](results/phase2-crash-2026-10-26.md)) |
 | `cmd/swarmblk-wasm` | the engine for browsers, built with `GOOS=js GOARCH=wasm`: in a Service Worker, it serves a snapshot's disk to an emulator in the page by HTTP range requests, checking every chunk and keeping chunks in the browser's cache, and records the guest's reads as a boot trace ([results](results/phase2-browser-2026-10-27.md)) |
+| `web/` | the page and Service Worker that boot a snapshot's disk in a browser tab with v86, through `cmd/swarmblk-wasm` ([README](../web/README.md)) |
 
 Each prints its own usage. `go test ./...` runs the unit tests, which need no network.

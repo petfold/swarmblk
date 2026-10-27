@@ -16,6 +16,8 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
+      - name: go vet for browsers, which ./... skips
+        run: GOOS=js GOARCH=wasm go vet ./cmd/swarmblk-wasm/ ./internal/engine/ ./internal/epoch/
       - name: QEMU's tools, for the overlay tests
         run: sudo apt-get update -q && sudo apt-get install -y -q qemu-utils
       - run: go test ./...
