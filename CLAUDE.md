@@ -55,6 +55,7 @@ Unit tests need no network. Integration tests need a running Bee node and a fund
 
 ```
 cmd/swarmblk/        CLI: import, checkpoint, restore, export, diff (Phase 1); serve, card, boot, iolock (Phase 2)
+cmd/swarmblk-wasm/   the engine for browsers, in a Service Worker (Phase 2 experiment)
 cmd/chunkprobe/      Phase 0 latency probe
 tools/beeproxy/      Phase 0 logging proxy
 tools/crashtest/     Phase 2 crash and cost test with a real guest

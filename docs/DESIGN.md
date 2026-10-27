@@ -295,6 +295,7 @@ Decisions:
 | 2026-10-27 | Disk cards are unsigned JSON; the machine's files use Bee's chunk encryption, whose references hold the keys | The card is the restorer's root of trust, so a signature checked against a key it names proves nothing; all it names is content-addressed or signed by the lineage key; no new cryptography, and any Swarm tool reads the files with the card | Signing with the lineage key; AES-GCM under a separate key; wrapping keys in a passphrase, left for Phase 4 |
 | 2026-10-27 | A card holds no lineage key; a machine booted from it starts a new lineage on the old one's head | One writer per lineage: a card used while its first host still runs must not make a second writer | Carrying the key for takeovers, which the registry will do (Phase 4) |
 | 2026-10-27 | `swarmblk boot` runs a card's machine with QEMU from a small VM definition, on a new disk that hydrates | A recovery must not depend on the dead host's libvirt or scripts; a hydrated disk outlives the network | libvirt domain XML; raw QEMU command lines |
+| 2026-10-27 | In a browser, the engine runs as WebAssembly in a Service Worker and serves the disk to the emulator by HTTP range requests | v86 takes disks only as URLs, buffers or files; any emulator that reads disks over HTTP works unchanged; requests stay on the page's origin, and the engine checks every chunk and keeps a cache that boots the machine with no node | Range reads from Bee's `/bzz` (no checks, no offline cache, and Bee refuses v86's extra header); patching v86's disk code |
 
 ## 13. References
 

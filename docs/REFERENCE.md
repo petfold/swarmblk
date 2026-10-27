@@ -536,5 +536,6 @@ The state directory and `keys/` are created with mode 0700.
 | `tools/beeproxy` | a logging HTTP proxy in front of Bee, used in Phase 0 ([PHASE0.md](PHASE0.md)) |
 | `cmd/chunkprobe` | measures chunk retrieval latency and throughput through a Bee node |
 | `tools/crashtest` | the crash-consistency and cost test with a real guest ([results](results/phase2-crash-2026-10-26.md)) |
+| `cmd/swarmblk-wasm` | the engine for browsers, built with `GOOS=js GOARCH=wasm`: in a Service Worker, it serves a snapshot's disk to an emulator in the page by HTTP range requests, checking every chunk and keeping chunks in the browser's cache |
 
 Each prints its own usage. `go test ./...` runs the unit tests, which need no network.

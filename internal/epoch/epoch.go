@@ -21,7 +21,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"syscall"
 
 	"github.com/ethersphere/bee/v2/pkg/swarm"
 )
@@ -254,10 +253,10 @@ func Open(dir string) (*Epoch, error) {
 // lock takes the epoch's lock, an exclusive flock on its index, which
 // closing the index releases. It closes both files if the epoch is in use.
 func (e *Epoch) lock() error {
-	if err := syscall.Flock(int(e.index.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockFile(e.index); err != nil {
 		e.data.Close()
 		e.index.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		if errors.Is(err, errLocked) {
 			return fmt.Errorf("epoch %s is in use", e.dir)
 		}
 		return err
