@@ -1,6 +1,6 @@
 # A Swarm disk in a browser tab — 27 October 2026
 
-First runs of a swarmblk disk under an emulator in a web page, on laptop A with node A's Bee, in headless Chromium 156 and by hand in Brave.
+First runs of a swarmblk disk under an emulator in a web page, on laptop A with node A's Bee, in headless Chromium 156 and by hand in Brave, on 27 and 28 October.
 
 ## Setup
 
@@ -39,3 +39,17 @@ Cold boots in fresh browser profiles, with Bee by then holding the chunks: a sam
 | without | 166 s | 47.1 s | 65 ms |
 
 The trace cut the disk waits by 61%, but the boot by only 8 s: the emulator sets the pace here, and the prefetch's own work competes with it for this laptop's CPU. Where Bee must retrieve chunks from the network, a trace should matter more, as it did natively (Alpine through node B: 17–18 min without, 3.5 min with). In a browser, though, a page reaches one host over at most six connections at once, which caps how fast chunks arrive from a node that retrieves them from the network. Freedom's `bzz://` handler, which serves pages from its node through Electron rather than the page's HTTP connections, might lift that cap, and so might several host names for one Bee. Neither was tried.
+
+## Checkpoints from the tab
+
+On 28 October the engine got writable disks and checkpoints. The page booted Alpine from the traced CD and added a 64 MiB ext4 disk as `hda`, imported as snapshot `ab55c826…` (22 chunks). The page passes each of v86's writes to the engine in order, and the guest's write completes once the engine holds it; the engine keeps the writes in memory and in an ordered log in Cache Storage. A checkpoint button runs SPEC §8 in the browser: rebuild, upload through node A's Bee with the test batch, wait for sync, publish. The lineage key is made in the browser and kept there.
+
+Three runs in one browser profile, each typing at the serial console:
+
+| Run | In the guest | Checkpoint |
+|---|---|---|
+| 1 | mount the disk, write `hello.txt`, `sync`, unmount | 1,039 blocks written, 19 chunks uploaded in 7.9 s: snapshot `f3d0cbdb…`, update 0 of a new lineage `0x393d2750…/b1561b05…` |
+| 2 | mount, write `second.txt`, `sync`, unmount; the browser is then killed | none: 16 blocks only in the browser |
+| 3 | mount: `second.txt` is there, replayed from the log; unmount | 20 blocks, 23 chunks in 4.0 s: snapshot `0bed6599…`, update 1 |
+
+Most of run 1's writes were zeros or blocks already on Swarm, which add no chunks. `swarmblk export` of the lineage, natively and with an empty state directory, gave update 1. Its filesystem passed `e2fsck -fn`, held both files with the guest's text, and its `meta.json` named update 0 as its parent.

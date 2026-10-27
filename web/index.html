@@ -9,14 +9,21 @@
   body { margin: 16px; background: #111; color: #ddd; font: 14px system-ui, sans-serif; }
   #screen_container { display: inline-block; background: #000; }
   #screen_container > div { white-space: pre; font: 14px monospace; line-height: 14px; }
-  #status { margin: 8px 0; color: #9c9; }
+  #status, #hdastate { margin: 8px 0; color: #9c9; }
+  #checkpointed { margin: 8px 0; color: #fc9; }
   #serial { width: 720px; margin: 8px 0; border: 1px solid #444; }
   code { color: #fc9; }
+  button { font: inherit; padding: 4px 12px; }
 </style>
 </head>
 <body>
-<p>A PC emulated in this tab (v86), booting a disk that swarmblk put on Swarm. <span id="how"></span></p>
-<p>Disk: <code id="disk"></code></p>
+<p>A PC emulated in this tab (v86), booting disks that swarmblk keeps on Swarm. <span id="how"></span></p>
+<p>CD: <code id="disk"></code></p>
+<div id="hdabox" hidden>
+  <p>Hard disk: <span id="hdastate"></span></p>
+  <p><button id="checkpoint" disabled>Checkpoint the hard disk to Swarm</button> <span id="nobatch" hidden>Add <code>&amp;batch=&lt;id&gt;</code> to the address to checkpoint.</span> <a id="reset" href="#">Forget this browser's copy of the hard disk</a></p>
+  <div id="checkpointed"></div>
+</div>
 <div id="status">starting…</div>
 <p id="tracing" hidden>The engine records the blocks this boot reads: <a id="trace" href="#">download them as a boot trace</a> once the machine is up, to store with the snapshot (<code>swarmblk checkpoint -prefetch</code>).</p>
 <p>Serial console (click and type):</p>
@@ -30,32 +37,37 @@
 const params = new URLSearchParams(location.search);
 const bee = params.get("bee") || "http://localhost:1633";
 const snapshot = params.get("snapshot");
+const hda = params.get("hda"); // a writable hard disk, through the engine
+const batch = params.get("batch") || "";
 const drive = params.get("drive") === "hda" ? "hda" : "cdrom";
-// The disk comes through swarmblk's engine in a Service Worker (sw.js), or
-// with ?direct=1 straight from Bee's /bzz, or with ?local=FILE from a file
-// next to this page, to check the page without Swarm.
+// The disk named by snapshot comes through swarmblk's engine in a Service
+// Worker (sw.js), or with ?direct=1 straight from Bee's /bzz, or with
+// ?local=FILE from a file next to this page, to check the page without
+// Swarm.
 const mode = params.get("local") ? "local" : params.get("direct") ? "direct" : "engine";
+const engineURL = (name, ref, rw) => `/swarm-disk/${name}?snapshot=${encodeURIComponent(ref || "")}&bee=${encodeURIComponent(bee)}${rw ? "&rw=1" : ""}`;
 const url = {
   local: params.get("local"),
   direct: `${bee}/bzz/${snapshot}/disk.raw`,
-  engine: `/swarm-disk/${snapshot}?bee=${encodeURIComponent(bee)}`,
+  engine: engineURL(drive, snapshot, false),
 }[mode];
+const hdaURL = hda === null ? null : engineURL("hda", hda, true);
 document.getElementById("how").textContent = {
   local: "Here the disk comes from a file next to this page, without Swarm.",
   direct: "The disk is read from Bee's /bzz as the machine asks for it; writes stay in the tab.",
-  engine: "swarmblk's engine, compiled to WebAssembly and running in a Service Worker, reads the disk chunk by chunk from Bee, checks every chunk against its address, and keeps it in the browser's cache; writes stay in the tab.",
+  engine: "swarmblk's engine, compiled to WebAssembly and running in a Service Worker, reads the disks chunk by chunk from Bee, checks every chunk against its address, and keeps it in the browser's cache. A hard disk's writes stay in the browser until a checkpoint puts them on Swarm.",
 }[mode];
-document.getElementById("disk").textContent = url;
+document.getElementById("disk").textContent = snapshot ? url : "none";
 const status = document.getElementById("status");
 const start = performance.now();
 const seconds = () => ((performance.now() - start) / 1000).toFixed(1);
 
-// Count the disk's reads, and time each.
+// Count the disks' reads, and time each.
 let reads = 0;
 const timings = [];
 const realOpen = XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open = function (method, u, ...rest) {
-  this._disk = String(u) === url;
+  this._disk = String(u) === url || String(u) === hdaURL;
   if (this._disk) reads++;
   return realOpen.call(this, method, u, ...rest);
 };
@@ -75,22 +87,32 @@ XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
   if (name.toLowerCase() !== "x-accept-encoding") realSetHeader.call(this, name, value);
 };
 
-// The engine's counters, when it serves the disk.
+// The engine's counters, when it serves the disks.
 let engineStats = null;
 async function pollStats() {
   try { engineStats = await (await fetch("/swarm-disk/stats")).json(); } catch (e) {}
 }
 
-// The disk's size: from the engine, the end of a one-byte range read; from
-// Bee, which shows a page from elsewhere no Content-Range, a HEAD request's
-// Content-Length.
+// A disk's size: from the engine, which opens it; from Bee, which shows a
+// page from elsewhere no Content-Range, a HEAD request's Content-Length.
 async function diskSize() {
-  const direct = mode === "direct";
-  const r = await fetch(url, direct ? { method: "HEAD" } : { headers: { Range: "bytes=0-0" } });
+  if (mode === "engine") return (await engineInfo(drive, snapshot, false)).size;
+  const r = await fetch(url, { method: "HEAD" });
   if (!r.ok) throw new Error(`the disk: ${r.status} ${await r.text()}`);
-  const total = Number(direct ? r.headers.get("Content-Length") : (r.headers.get("Content-Range") || "").split("/")[1]);
-  if (!total) throw new Error("the disk's size is unknown");
-  return total;
+  return Number(r.headers.get("Content-Length"));
+}
+async function engineInfo(name, ref, rw) {
+  const r = await fetch(engineURL(name, ref, rw).replace("/swarm-disk/", "/swarm-disk/info/"));
+  if (!r.ok) throw new Error(`disk ${name}: ${await r.text()}`);
+  return r.json();
+}
+let hdaInfo = null;
+function showHDA(info) {
+  hdaInfo = info;
+  const writes = engineStats ? engineStats.writes : info.writes;
+  document.getElementById("hdastate").textContent = `snapshot ${info.snapshot}` +
+    (info.lineage ? `, update ${info.index} of lineage ${info.lineage}` : ", in no lineage that this browser writes yet") +
+    `; ${writes} blocks written since its last checkpoint`;
 }
 
 let serial = "";
@@ -98,7 +120,7 @@ let emulator;
 let graphical = false;
 
 async function boot() {
-  if (mode === "engine") {
+  if (mode === "engine" || hda !== null) {
     if (!("serviceWorker" in navigator)) {
       status.textContent = "This browser has no Service Workers, which the engine needs.";
       return;
@@ -114,40 +136,113 @@ async function boot() {
     setInterval(pollStats, 1000);
     document.getElementById("tracing").hidden = false;
   }
-  const image = mode === "local" ? { url } : { url, async: true, size: await diskSize() };
-  emulator = new V86({
+  const config = {
     wasm_path: "vendor/v86.wasm",
     memory_size: 128 * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
     screen_container: document.getElementById("screen_container"),
     bios: { url: "vendor/seabios.bin" },
     vga_bios: { url: "vendor/vgabios.bin" },
-    [drive]: image,
     filesystem: {}, // a shared folder, which some guests mount
     serial_console: { type: "xtermjs", container: document.getElementById("serial") },
     autostart: true,
-  });
+  };
+  if (snapshot || mode === "local") {
+    config[drive] = mode === "local" ? { url } : { url, async: true, size: await diskSize() };
+  }
+  if (hda !== null) {
+    document.getElementById("hdabox").hidden = false;
+    const info = await engineInfo("hda", hda, true);
+    showHDA(info);
+    config.hda = { url: hdaURL, async: true, size: info.size };
+    if (snapshot && drive === "cdrom") config.boot_order = 0x123; // the CD first
+  }
+  emulator = new V86(config);
   emulator.add_listener("serial0-output-byte", b => { serial += String.fromCharCode(b); });
   emulator.add_listener("screen-set-mode", g => { graphical = g; });
+  if (hda !== null) emulator.add_listener("emulator-ready", passWrites);
 }
 
-setInterval(() => {
+// passWrites sends the hard disk's writes to the engine, in order. v86 keeps
+// a write in its own cache, and the guest's write completes once the engine
+// holds it too.
+function passWrites() {
+  const ide = emulator.v86.cpu.devices.ide;
+  const buffer = ide && ide.primary && ide.primary.master && ide.primary.master.buffer;
+  if (!buffer) {
+    status.textContent = "cannot find the hard disk in v86, so its writes stay in the tab";
+    return;
+  }
+  const keep = buffer.set.bind(buffer);
+  let queue = Promise.resolve();
+  buffer.set = (offset, data, done) => {
+    const copy = data.slice();
+    keep(offset, data, () => {});
+    queue = queue.then(async () => {
+      const r = await fetch(hdaURL, { method: "PUT", headers: { "X-Offset": String(offset) }, body: copy });
+      if (!r.ok) throw new Error(await r.text());
+    }).catch(e => {
+      document.getElementById("checkpointed").textContent = `a write did not reach the engine: ${e.message}`;
+    }).finally(done);
+  };
+}
+
+let checkpointResult = null;
+async function checkpoint() {
+  const button = document.getElementById("checkpoint");
+  button.disabled = true;
+  const out = document.getElementById("checkpointed");
+  out.textContent = "checkpointing: rebuilding the disk's tree, uploading what changed, waiting for Bee to sync it, publishing…";
+  const t0 = performance.now();
+  try {
+    const r = await fetch(`/swarm-disk/checkpoint/hda?batch=${encodeURIComponent(batch)}`, { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    const c = await r.json();
+    checkpointResult = { ...c, seconds: ((performance.now() - t0) / 1000).toFixed(1) };
+    out.innerHTML = "";
+    out.append(`Checkpointed in ${checkpointResult.seconds} s: ${c.blocks} blocks, ${c.chunks} chunks uploaded. Snapshot `,
+      Object.assign(document.createElement("code"), { textContent: c.snapshot }),
+      `, update ${c.index} of lineage `, Object.assign(document.createElement("code"), { textContent: c.lineage }), ". ");
+    const a = Object.assign(document.createElement("a"), { textContent: "Open the lineage's latest update in a new browser profile with this address." });
+    const u = new URL(location.href);
+    u.searchParams.set("hda", c.lineage);
+    a.href = u.toString();
+    out.append(a);
+    showHDA(await engineInfo("hda", hda, true));
+  } catch (e) {
+    checkpointResult = { error: e.message };
+    out.textContent = `The checkpoint failed: ${e.message}`;
+  }
+  button.disabled = !batch;
+}
+document.getElementById("checkpoint").addEventListener("click", checkpoint);
+document.getElementById("checkpoint").disabled = !batch;
+document.getElementById("nobatch").hidden = !!batch;
+document.getElementById("reset").addEventListener("click", async e => {
+  e.preventDefault();
+  if (!confirm("Forget the hard disk's writes since its last checkpoint, and start again from the address's snapshot?")) return;
+  await fetch("/swarm-disk/reset/hda", { method: "POST" });
+  location.reload();
+});
+
+setInterval(async () => {
   let s = `running for ${seconds()} s; the machine made ${reads} disk reads`;
   if (engineStats) {
     s += `; the engine served ${(engineStats.bytes / 1048576).toFixed(1)} MiB: ${engineStats.fetched} chunks fetched from Bee and ${engineStats.cached} from the browser's cache, every one checked against its address`;
   }
   status.textContent = s;
+  if (hdaInfo) showHDA(hdaInfo);
 }, 1000);
 
 // The boot trace: a download for the user, or with ?record=1 a post to the
 // page's server once the serial console shows a login prompt.
-const traceURL = `/swarm-disk/trace/${snapshot}`;
+const traceURL = `/swarm-disk/trace/${drive}`;
 document.getElementById("trace").addEventListener("click", async e => {
   e.preventDefault();
   const r = await fetch(traceURL);
   if (!r.ok) { status.textContent = `no boot trace: ${await r.text()}`; return; }
   const blob = await r.blob();
-  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `${snapshot.slice(0, 8)}.trace` });
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `${(snapshot || drive).slice(0, 8)}.trace` });
   a.click();
 });
 if (params.get("record")) {
@@ -161,14 +256,15 @@ if (params.get("record")) {
 }
 
 // With ?report=1 the page posts what it shows to its server every 2 s, for
-// a test harness, and with ?type=A;B it types those lines at the serial
-// console's login prompt. In graphical mode it also posts the screen, every
-// 10 s.
+// a test harness; with ?type=A;B it types those lines at the serial
+// console's login prompt, 3 s apart, and with ?checkpoint=1 checkpoints the
+// hard disk 10 s after the last. In graphical mode it also posts the screen,
+// every 10 s.
 if (params.get("report")) {
   const screen = () => document.querySelector("#screen_container > div").innerText;
   const terminal = () => (document.querySelector("#serial .xterm-rows") || {}).innerText || "";
   setInterval(() => {
-    fetch("/log", { method: "POST", body: JSON.stringify({ t: seconds(), mode, reads, graphical, engine: engineStats, screen: screen(), serial: serial.slice(-2000), terminal: terminal(), timings }) }).catch(() => {});
+    fetch("/log", { method: "POST", body: JSON.stringify({ t: seconds(), mode, reads, graphical, engine: engineStats, checkpoint: checkpointResult, screen: screen(), serial: serial.slice(-4000), terminal: terminal(), timings }) }).catch(() => {});
   }, 2000);
   setInterval(() => {
     const canvas = document.querySelector("#screen_container canvas");
@@ -180,11 +276,12 @@ if (params.get("report")) {
     if (!typed && lines.length && serial.includes("login:")) {
       typed = true;
       lines.forEach((line, i) => setTimeout(() => emulator.serial0_send(line + "\n"), 3000 * i));
+      if (params.get("checkpoint")) setTimeout(checkpoint, 3000 * lines.length + 10000);
     }
   }, 1000);
 }
 
-boot().catch(e => { status.textContent = `failed: ${e}`; });
+boot().catch(e => { status.textContent = `failed: ${e.message || e}`; });
 </script>
 </body>
 </html>
