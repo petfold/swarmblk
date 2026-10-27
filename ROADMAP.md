@@ -82,7 +82,7 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - vhost-user-blk and ublk exports
 - Suspend to Swarm and resume elsewhere (QEMU migration stream, lazy page loading)
 - Engine-side stamp signing, so Bee can be a remote gateway; engine-side encryption
-- Disks in a browser tab: the engine as WebAssembly in a Service Worker, under an emulator such as v86 (`cmd/swarmblk-wasm`; first runs 2026-10-27)
+- Disks in a browser tab: the engine as WebAssembly in a Service Worker, under an emulator such as v86 (`cmd/swarmblk-wasm`; [first runs](docs/results/phase2-browser-2026-10-27.md))
 
 ## Later projects
 

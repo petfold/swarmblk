@@ -119,7 +119,7 @@ swarmblk checkpoint [-bee url] [-batch id] [-home dir] -disk name
 swarmblk checkpoint [-bee url] [-batch id] [-home dir] [-branch] [-prefetch file] overlay.qcow2
 ```
 
-Turns the changes of a writable disk, or of a stopped VM's qcow2 overlay, into the next snapshot, and prints its reference. With nothing changed, it uploads nothing and prints the snapshot the disk or overlay already sits on.
+Turns the changes of a writable disk, or of a stopped VM's qcow2 overlay, into the next snapshot, and prints its reference. With nothing changed, it uploads nothing and prints the snapshot the disk or overlay already sits on, unless `-prefetch` names a boot trace the snapshot lacks: then the next snapshot has the same disk and the new trace, a few chunks to upload.
 
 **A disk** (`-disk`). If a serve holds the disk, checkpoint asks it over the control socket, and that serve's batch and guest agent are used. Otherwise checkpoint opens the disk itself, with `-batch` and no guest agent. The checkpoint runs while the guest keeps writing:
 
@@ -536,6 +536,6 @@ The state directory and `keys/` are created with mode 0700.
 | `tools/beeproxy` | a logging HTTP proxy in front of Bee, used in Phase 0 ([PHASE0.md](PHASE0.md)) |
 | `cmd/chunkprobe` | measures chunk retrieval latency and throughput through a Bee node |
 | `tools/crashtest` | the crash-consistency and cost test with a real guest ([results](results/phase2-crash-2026-10-26.md)) |
-| `cmd/swarmblk-wasm` | the engine for browsers, built with `GOOS=js GOARCH=wasm`: in a Service Worker, it serves a snapshot's disk to an emulator in the page by HTTP range requests, checking every chunk and keeping chunks in the browser's cache |
+| `cmd/swarmblk-wasm` | the engine for browsers, built with `GOOS=js GOARCH=wasm`: in a Service Worker, it serves a snapshot's disk to an emulator in the page by HTTP range requests, checking every chunk and keeping chunks in the browser's cache, and records the guest's reads as a boot trace ([results](results/phase2-browser-2026-10-27.md)) |
 
 Each prints its own usage. `go test ./...` runs the unit tests, which need no network.

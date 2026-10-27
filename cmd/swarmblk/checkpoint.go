@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"errors"
@@ -82,7 +83,7 @@ const window = 16384
 // follows it. Lineage keys live in keys. The snapshot gets the boot trace
 // prefetch, if not nil, or else keeps its parent's (SPEC §6). It reports
 // progress to w and returns the snapshot's reference, or the parent's if
-// the overlay changes nothing.
+// the overlay changes nothing and prefetch is nil or the parent's trace.
 func checkpoint(ctx context.Context, c *bee.Client, s *store.Store, keys, batch, path string, branch bool, prefetch []byte, w io.Writer) (swarm.Address, error) {
 	if err := checkBatch(ctx, c, batch); err != nil {
 		return swarm.ZeroAddress, err
@@ -135,7 +136,8 @@ type commitSpec struct {
 // it runs spec.uploaded and publishes the snapshot as the next update of the
 // parent's lineage, or of a new one (SPEC §7). Chunks go to s, and get
 // supplies the parent's. It reports progress to w and returns the snapshot's
-// reference, or the parent's if the blocks change nothing.
+// reference, or the parent's if the blocks change nothing and spec.prefetch
+// is nil or the parent's trace: a new trace alone makes a new snapshot.
 func commit(ctx context.Context, c *bee.Client, s *store.Store, get storage.Getter, keys, batch string, spec commitSpec, w io.Writer) (swarm.Address, error) {
 	release, err := s.Hold() // the new chunks exist only in s until synced
 	if err != nil {
@@ -168,8 +170,15 @@ func commit(ctx context.Context, c *bee.Client, s *store.Store, get storage.Gett
 		return swarm.ZeroAddress, err
 	}
 	if root.Equal(parent.Meta.DiskRoot) {
-		fmt.Fprintf(w, "no changes since snapshot %s\n", parent.Ref)
-		return parent.Ref, nil
+		same, err := sameTrace(ctx, get, parent, spec.prefetch)
+		if err != nil {
+			return swarm.ZeroAddress, err
+		}
+		if same {
+			fmt.Fprintf(w, "no changes since snapshot %s\n", parent.Ref)
+			return parent.Ref, nil
+		}
+		fmt.Fprintf(w, "%s: no blocks changed, but the boot trace is new\n", spec.what)
 	}
 	if next.key == nil {
 		if next.l, next.key, err = lineage.Create(keys); err != nil {
@@ -253,6 +262,19 @@ func commit(ctx context.Context, c *bee.Client, s *store.Store, get storage.Gett
 	}
 	fmt.Fprintf(w, "lineage %s: update %d is snapshot %s\n", next.l, index, snap)
 	return snap, nil
+}
+
+// sameTrace reports whether the boot trace prefetch, if not nil, is the one
+// that parent has, so that a snapshot with the same disk would add nothing.
+func sameTrace(ctx context.Context, get storage.Getter, parent snapshot.Snapshot, prefetch []byte) (bool, error) {
+	if prefetch == nil {
+		return true, nil
+	}
+	runs, err := snapshot.ReadTrace(ctx, get, parent)
+	if err != nil {
+		return false, err
+	}
+	return runs != nil && bytes.Equal(snapshot.EncodeTrace(runs), prefetch), nil
 }
 
 // successor says where the snapshot after a parent goes: after update prev

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/petfold/swarmblk/internal/lineage"
 	"github.com/petfold/swarmblk/internal/snapshot"
 	"github.com/petfold/swarmblk/internal/store"
+	"github.com/petfold/swarmblk/internal/tree"
 )
 
 // needQEMU skips a test that needs QEMU's tools where they are missing,
@@ -314,6 +316,41 @@ func TestCheckpointElsewhere(t *testing.T) {
 	s1, _ := snapshot.Read(context.Background(), cp.bee.Store, snap1)
 	if s.Meta.Lineage.Owner == s1.Meta.Lineage.Owner {
 		t.Error("a host without the lineage's key continued it")
+	}
+}
+
+// TestCheckpointTrace stores a boot trace with a disk that did not change:
+// the new snapshot has the parent's disk and the new trace, and storing the
+// same trace again makes no snapshot.
+func TestCheckpointTrace(t *testing.T) {
+	needQEMU(t)
+	cp := newCheckpointer(t)
+	snap0, img := cp.importDisk(t)
+	o := newOverlay(t, snap0, img)
+	if snap, err := cp.run(t, o, false); err != nil || !snap.Equal(snap0) {
+		t.Fatalf("an unchanged overlay without a trace: %s, %v", snap, err)
+	}
+	runs := []tree.Range{{Start: 3, Count: 2}, {Start: 1, Count: 1}}
+	trace := snapshot.EncodeTrace(runs)
+	n := len(cp.bee.Received())
+	snap1, err := cp.runWith(t, o, false, trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s0, _ := snapshot.Read(ctx, cp.bee.Store, snap0)
+	s1, err := snapshot.Read(ctx, cp.bee.Store, snap1)
+	if err != nil || snap1.Equal(snap0) || s1.Meta.Parent == nil || !s1.Meta.Parent.Equal(snap0) || !s1.Meta.DiskRoot.Equal(s0.Meta.DiskRoot) || s1.Meta.Stats.ChangedBlocks != 0 {
+		t.Fatalf("the snapshot with the trace: %+v, %v", s1.Meta, err)
+	}
+	if got, err := snapshot.ReadTrace(ctx, cp.bee.Store, s1); err != nil || !reflect.DeepEqual(got, runs) {
+		t.Errorf("its trace is %v, %v; want %v", got, err, runs)
+	}
+	if up := len(cp.bee.Received()) - n; up > 10 {
+		t.Errorf("storing a trace uploaded %d chunks", up)
+	}
+	if snap, err := cp.runWith(t, o, false, trace); err != nil || !snap.Equal(snap1) {
+		t.Errorf("the same trace again: %s, %v; want %s", snap, err, snap1)
 	}
 }
 

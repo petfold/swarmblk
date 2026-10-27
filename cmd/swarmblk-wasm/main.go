@@ -6,11 +6,12 @@
 // chunk, checks every chunk against its address, and keeps the chunks in
 // the browser's Cache Storage, so that what was read once is read again
 // without the network. It prefetches from the snapshot's boot trace, if it
-// has one (SPEC §6), and reads ahead of sequential reads. It gives
-// JavaScript three functions:
+// has one (SPEC §6), and reads ahead of sequential reads. It records the
+// guest's reads as a new boot trace. It gives JavaScript four functions:
 //
 //	swarmblkOpen(bee, snapshot)      a promise of {size, root, trace}
 //	swarmblkRead(snapshot, off, n)   a promise of n bytes, a Uint8Array
+//	swarmblkTrace(snapshot)          the guest's reads so far, a boot trace in a Uint8Array
 //	swarmblkStats()                  {fetched, cached, memory, reads, bytes}
 //
 // fetched counts the chunks that came from Bee, cached those that came from
@@ -64,6 +65,15 @@ func main() {
 		ref, off, n := args[0].String(), int64(args[1].Float()), args[2].Int()
 		return promise(func() (any, error) { return read(ref, off, n) })
 	}))
+	g.Set("swarmblkTrace", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		mu.Lock()
+		d, ok := disks[args[0].String()]
+		mu.Unlock()
+		if !ok {
+			return js.Null()
+		}
+		return toJS(snapshot.EncodeTrace(d.rec.Runs()))
+	}))
 	g.Set("swarmblkStats", js.FuncOf(func(js.Value, []js.Value) any {
 		return js.ValueOf(map[string]any{"fetched": fetched.Load(), "cached": cached.Load(), "memory": memory.Load(), "reads": reads.Load(), "bytes": bytes.Load()})
 	}))
@@ -75,6 +85,7 @@ func main() {
 // at once, and the guest's reads find what they fetched in memory.
 type disk struct {
 	s, ra *engine.Snapshot
+	rec   *engine.Recorder // the guest's reads
 
 	mu         sync.Mutex
 	next, warm int64 // where the last read ended, and how far reads ahead reach
@@ -118,7 +129,7 @@ func open(beeURL, ref string) (any, error) {
 	if len(trace) > 0 {
 		blocks = s.Prefetch(ctx, trace, window).Blocks()
 	}
-	disks[ref] = &disk{s: s, ra: ra}
+	disks[ref] = &disk{s: s, ra: ra, rec: s.Record()}
 	return info(s, blocks), nil
 }
 
