@@ -65,6 +65,7 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - [ ] Rotation by deduplicated re-stamping (P6); adoption of shared bases; batch binding per host (P2, P3)
 - [ ] Scrub and repair from the local chunk store; pin the latest snapshot
 - [ ] Cost report per disk and per retention class
+- [ ] Evaluate the [Swarm Volume Registry](https://github.com/shtukaresearch/swarm-volume-registry) for postage: its keepers could take over top-ups (P5), a Safe could pay, and the owner still signs every chunk (P2)
 
 **Gate:** a simulated 90-day history keeps every retained snapshot restorable within budget.
 
@@ -82,6 +83,7 @@ Met 2026-10-26 ([results](docs/results/phase1-gate-2026-10-26.md)): a CirrOS gue
 - vhost-user-blk and ublk exports
 - Suspend to Swarm and resume elsewhere (QEMU migration stream, lazy page loading)
 - Engine-side stamp signing, so Bee can be a remote gateway; engine-side encryption
+- Reads before Bee starts: the engine reads through any `storage.Getter` and checks every chunk against its address, so a small client that fetches chunks from peers could serve a disk until Bee is up
 - Disks in a browser tab: the engine as WebAssembly in a Service Worker, under an emulator such as v86, with writes kept in the browser and checkpoints from the tab (`cmd/swarmblk-wasm` and `web/`; [first runs](docs/results/phase2-browser-2026-10-27.md))
 
 ## Later projects

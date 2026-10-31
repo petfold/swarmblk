@@ -255,10 +255,13 @@ Legacy software that needs a disk is served by the first two. General-purpose VM
 Measurements (Phase 0):
 
 - Retrieval latency (median and 99th percentile) for random chunks from a light and a full node, and how throughput scales with parallel requests.
-- Boot working set and read order for two or three common images, and whether traces survive kernel updates.
+- Boot working set and read order for two or three common images, and whether traces survive kernel updates and carry over to different hardware.
 - Push-sync throughput for checkpoint-sized uploads through `/chunks/stream`.
 - Hydration speed within the free bandwidth allowance, light versus full node.
 - Latency and staleness of feed lookups for the latest snapshot. First numbers (2026-10-26, light nodes): a lookup takes 2–5 s, and a new update showed on the first poll, from a second node too. Bee's lookup drops probes slower than 1 s, so a head can lag under load.
+- Availability at redundancy level 0: what share of fresh chunks no node can serve for a while, and whether it grows if neighbourhoods shrink towards one storer. On a disk, each such chunk is a read that waits. If the share is large, base images and older snapshots may need an erasure-coded copy that the engine reads when it hydrates.
+- The engine's memory beside a Bee light node, with its state on tmpfs, for hosts with no local disk. Checkpoints then bound what a power cut loses.
+- Whether chunks cached along retrieval paths cut cost or latency when many machines read the same image.
 
 Decisions:
 
@@ -308,6 +311,7 @@ Prior art:
 - [QEMU dirty bitmaps](https://qemu.googlesource.com/qemu/+/refs/tags/v8.0.5/docs/interop/bitmaps.rst): persistent change tracking in qcow2 for incremental backup.
 - [Slacker, USENIX FAST '16](https://usenix.org/node/194431): lazy container images; start-up reads 6.4% of pulled data.
 - [deboot](https://debootdevs.github.io/deboot/) ([repo](https://github.com/debootdevs/deboot)): boots bare metal or VMs through GRUB or U-Boot into an initramfs that starts a Bee node and downloads a read-only squashfs root from Swarm into memory. A Swarm grant project, 2022–2024.
+- [Swarm Volume Registry](https://github.com/shtukaresearch/swarm-volume-registry): an on-chain contract that wraps each postage batch in a volume with an owner, who signs chunks, and a payer, which can be a Safe. Any keeper can top a volume up.
 
 Sources checked (Bee at commit [a98e5bd](https://github.com/ethersphere/bee/tree/a98e5bd433426864d1753565517e4391e1879195), 23 October 2026):
 
